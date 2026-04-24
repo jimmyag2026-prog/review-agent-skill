@@ -263,6 +263,9 @@ def main():
                    help="print annotations but do not write files")
     ap.add_argument("--skip-simulation", action="store_true",
                    help="run only Layer A (four-pillar)")
+    ap.add_argument("--top-n", type=int, default=None,
+                   help="cap the Q&A loop to the top N most important findings "
+                        "(default: 5, override via REVIEW_AGENT_TOP_N env)")
     args = ap.parse_args()
 
     sd = Path(args.session_dir)
@@ -364,15 +367,29 @@ def main():
         for a in annotations:
             f.write(json.dumps(a, ensure_ascii=False) + "\n")
 
-    # Set cursor to first BLOCKER (then IMPROVEMENT)
+    # Cap the Q&A loop to the top-N most important findings. Default 5 —
+    # override with REVIEW_AGENT_TOP_N env or --top-n flag.
+    top_n = int(os.environ.get("REVIEW_AGENT_TOP_N", "5"))
+    if args.top_n is not None:
+        top_n = args.top_n
+
     blockers = [a["id"] for a in annotations if a["severity"] == "BLOCKER"]
     improvements = [a["id"] for a in annotations if a["severity"] == "IMPROVEMENT"]
     nice = [a["id"] for a in annotations if a["severity"] == "NICE-TO-HAVE"]
     ordered = blockers + improvements + nice
+
+    # Split into the active Q&A set (top_n) and deferred (rest). Remainder
+    # stays in annotations.jsonl with status=open; qa-step.py won't surface
+    # them unless Requester explicitly asks "keep going" after the top-N.
+    active = ordered[:top_n]
+    deferred = ordered[top_n:]
     cursor = {
-        "current_id": ordered[0] if ordered else None,
-        "pending": ordered[1:],
+        "current_id": active[0] if active else None,
+        "pending": active[1:],
+        "deferred": deferred,
         "done": [],
+        "total_found": len(ordered),
+        "top_n": top_n,
     }
     json.dump(cursor, open(sd / "cursor.json", "w"), indent=2, ensure_ascii=False)
 

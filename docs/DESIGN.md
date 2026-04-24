@@ -153,6 +153,29 @@ Synthetic end-to-end without touching real Lark:
 
 Only after synthetic E2E green → push to GitHub + tag v2.0.
 
+## Channel compatibility matrix
+
+openclaw per-peer auto-spawn is **not uniform across channels**. Verified against openclaw 2026.3.28:
+
+| Channel | Auto-spawn subagent | Key | Notes |
+|---|---|---|---|
+| **feishu / lark** | ✅ | `channels.feishu.dynamicAgentCreation: {enabled: true, maxAgents, workspaceTemplate, agentDirTemplate}` | Core openclaw feature. `dynamicAgentCreation` key name is specific to feishu; **do not copy the wecom schema**. workspaceTemplate is a target path template (with `{userId}` / `{agentId}` placeholders), not a source directory — openclaw only mkdir's; we patch in our template via `feishu_seed_workspace_patch.py`. |
+| **wecom** | ✅ | `channels.wecom.dynamicAgents.enabled` + `channels.wecom.dm.createAgentOnFirstMessage` + `channels.wecom.workspaceTemplate` | External plugin (`@sunnoy/wecom` npm). Plugin schema has `additionalProperties: true`. workspaceTemplate here IS a source dir (plugin clones it). Plugin logic ≠ feishu. |
+| telegram | ❌ | — | No SDK hooks for auto-spawn. All peers share the main agent. |
+| whatsapp | ❌ | — | Same. |
+| imessage | ❌ | — | Same. |
+| discord | ❌ | — | Same. |
+| slack | ❌ | — | Same. |
+| mattermost | ❌ | — | Same. |
+| bluebubbles | ❌ | — | Same. |
+
+**v2 architecture only holds on feishu + wecom.** On all other channels, the review-agent skill can still be installed and invoked from the shared main agent, but every Requester's messages land in the same agent's context (same failure mode as v1 hermes' OPEN_ISSUES#I-001).
+
+If your primary channel is telegram/whatsapp/etc.:
+- Use **v1 hermes** (branch `main`, tag `v1.1.1`) — single main agent + MEMORY.md SOP routing. Not as clean architecturally but fully functional.
+- OR wait for openclaw to add dynamic-agent support to more channels (watch their release notes).
+- OR run multiple openclaw instances, one per primary user (not recommended for team deployments).
+
 ## Non-goals for v2.0
 
 - Multi-responder (each peer picks a different responder) — Phase 7. Requires a mapping file + SOUL.md parameterization.

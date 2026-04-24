@@ -469,6 +469,13 @@ def main():
               file=sys.stderr)
         sys.exit(2)
 
+    # Snapshot first-turn state BEFORE mutating cursor, so we can add a
+    # "found N total, walking the top-K" preamble on the very first reply.
+    is_first_turn = len(cursor.get("done", [])) == 0
+    total_found = cursor.get("total_found", len(anns))
+    top_n_cap = cursor.get("top_n", 5)
+    deferred_count = total_found - top_n_cap
+
     current_ann = next((a for a in anns if a.get("id") == current_id), None)
     if not current_ann:
         print(f"error: cursor points to {current_id} but not in annotations", file=sys.stderr)
@@ -527,12 +534,40 @@ def main():
         cursor["done"].append(current_id)
         cursor["current_id"] = pending[0] if pending else None
         cursor["pending"] = pending[1:]
+
+        # If we just ran out of pending BUT have deferred findings, append a
+        # closing hint to reply_text letting the Requester opt-in to continue.
+        if not cursor["current_id"] and cursor.get("deferred"):
+            nxt = cursor["deferred"]
+            reply_text = reply_text.rstrip() + (
+                f"\n\n---\n\n前 {cursor.get('top_n', 5)} 条已过完。"
+                f"还有 {len(nxt)} 条 deferred 的问题（优先级较低），回 `more` 继续，"
+                f"或 `done` 结束进入 merge+final-gate。"
+            )
+
+    # Support explicit "more" — pull deferred into pending on demand
+    msg_lower = args.message.strip().lower()
+    if msg_lower in ("more", "继续", "more please", "下一批") and cursor.get("deferred"):
+        cursor["pending"] = cursor["deferred"] + cursor.get("pending", [])
+        cursor["current_id"] = cursor["pending"][0] if cursor["pending"] else None
+        cursor["pending"] = cursor["pending"][1:]
+        cursor["deferred"] = []
+
     json.dump(cursor, open(sd / "cursor.json", "w"), indent=2, ensure_ascii=False)
 
     # Update meta last_activity
     meta = json.load(open(sd / "meta.json"))
     meta["last_activity_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
     json.dump(meta, open(sd / "meta.json", "w"), indent=2, ensure_ascii=False)
+
+    # First-turn preamble: if this was the first reply AND scan found more
+    # than top_n issues, tell the Requester what they're seeing.
+    if is_first_turn and total_found > top_n_cap:
+        preamble = (
+            f"我扫到 {total_found} 条问题。先带你过最关键的 {top_n_cap} 条"
+            f"——过完再看剩下 {deferred_count} 条要不要继续。\n\n---\n\n"
+        )
+        reply_text = preamble + reply_text
 
     # Log outbound
     append_conversation(sd, "reviewer", reply_text, source="lark_dm_out",

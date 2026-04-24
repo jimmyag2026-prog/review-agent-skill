@@ -15,7 +15,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$SCRIPT_DIR"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 ADMIN_OID=""; ADMIN_NAME=""; RESPONDER_NAME=""
 MODE="full"   # full | install-only | enable-only
@@ -56,10 +56,10 @@ phase_install() {
   banner "Phase A · Install skill (${SKILL_DST})"
   mkdir -p "$(dirname "$SKILL_DST")"
   if command -v rsync >/dev/null 2>&1; then
-    rsync -a --delete --exclude=".git" --exclude=".DS_Store" --exclude="install.sh" --exclude="check_prereqs.sh" --exclude="patch_openclaw_json.py" --exclude="install" --exclude="assets" --exclude="docs" --exclude="README.md" \
-          "$REPO_ROOT/" "$SKILL_DST/"
+    rsync -a --delete --exclude=".git" --exclude=".DS_Store" \
+          "$REPO_ROOT/skill/" "$SKILL_DST/"
   else
-    rm -rf "$SKILL_DST"; cp -R "$REPO_ROOT" "$SKILL_DST"
+    rm -rf "$SKILL_DST"; cp -R "$REPO_ROOT/skill" "$SKILL_DST"
   fi
   chmod +x "$SKILL_DST"/scripts/*.py 2>/dev/null || true
   echo -e "${GREEN}✓${NC} skill installed"
@@ -68,9 +68,9 @@ phase_install() {
   mkdir -p "$(dirname "$TEMPLATE_DST")"
   if command -v rsync >/dev/null 2>&1; then
     rsync -a --delete --exclude=".git" --exclude=".DS_Store" \
-          "$REPO_ROOT/assets/workspace-template/review-agent/" "$TEMPLATE_DST/"
+          "$REPO_ROOT/workspace-template/review-agent/" "$TEMPLATE_DST/"
   else
-    rm -rf "$TEMPLATE_DST"; cp -R "$REPO_ROOT/assets/workspace-template/review-agent" "$TEMPLATE_DST"
+    rm -rf "$TEMPLATE_DST"; cp -R "$REPO_ROOT/workspace-template/review-agent" "$TEMPLATE_DST"
   fi
   # Remove the install-only marker if present
   rm -f "$TEMPLATE_DST/responder-profile.md.INSTALL_SHOULD_SYMLINK"
@@ -80,8 +80,8 @@ phase_install() {
   mkdir -p "$GLOBAL_RA_DIR"
   if [ ! -f "$GLOBAL_RA_DIR/responder-profile.md" ]; then
     # Seed from v1's functional-default profile
-    if [ -f "$REPO_ROOT/references/template/boss_profile.md" ]; then
-      cp "$REPO_ROOT/references/template/boss_profile.md" \
+    if [ -f "$REPO_ROOT/skill/references/template/boss_profile.md" ]; then
+      cp "$REPO_ROOT/skill/references/template/boss_profile.md" \
          "$GLOBAL_RA_DIR/responder-profile.md"
       echo -e "${GREEN}✓${NC} seeded responder-profile from functional default"
     else
@@ -203,7 +203,7 @@ EOF
   # ── Apply the openclaw source patch (seed workspace with our template) ──
   # Required for feishu dynamic agents to load review-coach persona instead
   # of openclaw's default memorist template.
-  PATCHER="$SCRIPT_DIR/install/openclaw_patches/feishu_seed_workspace_patch.py"
+  PATCHER="$SCRIPT_DIR/openclaw_patches/feishu_seed_workspace_patch.py"
   if [ -f "$PATCHER" ]; then
     banner "Phase B · Patch openclaw feishu seed (makes per-peer subagents load review-coach, not default)"
     python3 "$PATCHER" || echo -e "${YELLOW}!${NC} patcher had issues — subagents may fall back to memorist persona. See docs/FIELD_NOTES.md"

@@ -13,11 +13,15 @@ Everything the Requester might send, and what you do.
 | `/review status` | print active session info (subject, round, # findings open) |
 | `/review help` | show command list + plain "just send your material" |
 | `/chat` + then normal message | skip review routing for that one message |
-| Plain chat + **attachment** (PDF / image / audio / Lark doc URL / Google doc URL) | 🚨 **start review immediately**, no "你想怎么处理" dialogue |
-| Plain chat + structured proposal (>300 chars with headers / tables / numbered options) | start review (ask one confirming Q if ambiguous) |
+| Plain chat + **attachment** (PDF / image / audio) | 🚨 **start review immediately** — ingest → scan → first finding |
+| Plain chat + **Lark doc/wiki URL** | pre-fetch via native `feishu_wiki.read` / `feishu_doc.read`, drop as `.txt` into `input/`, then ingest. If scope denied → ask Requester to paste text (see SOUL.md Step 1). |
+| Plain chat + Google Doc URL | same flow; try `gdrive read-file-content` or ask for paste |
+| Plain chat + long text (>300 chars, proposal-like) | start review (ask one confirming Q if ambiguous) |
 | Explicit ask wording ("请批准 X", "approve this", "帮我决定 A 还是 B") | start review |
-| Keyword triggers (see SOUL.md six-dimension list) | start review |
-| Weak signal ("帮我看看", no material attached) | ONE clarifying question: "这条要走 review 流程，还是普通聊天？" |
+| Keyword triggers (see SOUL.md six-dimension list) + NO material attached | **ask for material first**: "你有材料要一起看吗？附件 / Lark 链接 / 一段文字都行。" Do NOT start review yet — wait for their 2nd message with content. |
+| Weak signal ("帮我看看", no material) | same as above — ask for material, don't start review |
+| `more` / `继续` / `下一批` during Q&A loop | pull deferred findings into pending; continue Q&A |
+| `done` after Q&A loop | close session → merge-draft + final-gate → deliver |
 | Plain chat, no review signal | normal response |
 
 ## start-review flow (what "start" does internally)
@@ -33,17 +37,58 @@ Everything the Requester might send, and what you do.
 9. Enter Q&A loop (qa-step.py)
 10. When cursor empty → merge-draft + final-gate → deliver summary
 
-## Q&A loop
+## Q&A loop — exact tool-call sequence per turn
 
-Each Requester reply goes to:
+Each Requester reply. Two tool calls in order:
 
-```bash
-python3 ~/.openclaw/skills/review-agent/scripts/qa-step.py <session_id> "<reply>"
+**1. `exec` — run the next pipeline step**
+```json
+{
+  "name": "exec",
+  "arguments": {
+    "command": "python3 ~/.openclaw/skills/review-agent/scripts/qa-step.py sessions/<session_id> \"<reply_text>\""
+  }
+}
 ```
 
-qa-step.py classifies intent (accepted / modified / rejected / clarifying / scope change) and returns the next finding to emit. Send its stdout as the Lark reply (no modification — it's already Lark-formatted).
+Capture the stdout.
+
+**2. `message` — send the stdout to Requester**
+```json
+{
+  "name": "message",
+  "arguments": {
+    "action": "send",
+    "message": "<paste the exec stdout VERBATIM here — no paraphrasing, no adding context, no stripping>"
+  }
+}
+```
+
+🚨 **Omit the `target` field.** openclaw auto-routes to the current DM. If you pass `target: "ou_xxx"` (bare open_id), openclaw silently drops the message. Only use explicit target in the form `user:<open_id>` or `chat:<chat_id>` when you deliberately want to send elsewhere.
+
+qa-step.py classifies intent (accepted / modified / rejected / clarifying / scope change) and returns the next finding. Its stdout is already Lark-formatted — relay verbatim.
 
 **Shortcut replies** (already wired in qa-step.py): `a` / `b` / `c` / `p` (pass) / custom text / free text.
+
+## Happy path full example
+
+Requester sends: "我想让 jimmy 看看这个计划 [Lark wiki URL] 这是 Astros 大使激励机制"
+
+```
+Turn 1  exec: python3 ~/.openclaw/skills/review-agent/scripts/ingest.py sessions/<new_id>
+Turn 2  exec: python3 ~/.openclaw/skills/review-agent/scripts/confirm-topic.py sessions/<new_id>
+Turn 3  message: (omit target) message=<confirm-topic stdout, the a/b/c options>
+```
+
+Requester replies: "a"
+
+```
+Turn 4  exec: python3 ~/.openclaw/skills/review-agent/scripts/scan.py sessions/<new_id>
+Turn 5  exec: python3 ~/.openclaw/skills/review-agent/scripts/qa-step.py sessions/<new_id> "a"
+Turn 6  message: (omit target) message=<qa-step stdout, the first finding>
+```
+
+And so on. **One `message` send per Requester turn.** Scripts are your orchestration; the `message` tool is how the Requester sees anything.
 
 ## End of loop
 
