@@ -68,7 +68,7 @@ phase_install() {
   mkdir -p "$(dirname "$TEMPLATE_DST")"
   if command -v rsync >/dev/null 2>&1; then
     rsync -a --delete --exclude=".git" --exclude=".DS_Store" \
-                    "$REPO_ROOT/assets/workspace-template/review-agent/" "$TEMPLATE_DST/"
+          "$REPO_ROOT/assets/workspace-template/review-agent/" "$TEMPLATE_DST/"
   else
     rm -rf "$TEMPLATE_DST"; cp -R "$REPO_ROOT/assets/workspace-template/review-agent" "$TEMPLATE_DST"
   fi

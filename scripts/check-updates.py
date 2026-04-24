@@ -44,7 +44,9 @@ from datetime import datetime
 from pathlib import Path
 
 
-REPO = "jimmyag2026-prog/review-agent"   # update if repo moves
+REPO = "jimmyag2026-prog/review-agent-skill"   # standalone skill repo (v2+)
+# Fallback to the monorepo so v1 installs still find updates
+FALLBACK_REPO = "jimmyag2026-prog/review-agent"
 RELEASES_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 TAGS_API     = f"https://api.github.com/repos/{REPO}/tags"
 REPO_URL     = f"https://github.com/{REPO}"

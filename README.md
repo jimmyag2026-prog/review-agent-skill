@@ -9,12 +9,12 @@ This is the **openclaw skill form** of [review-agent](https://github.com/jimmyag
 ## One-line install
 
 ```bash
-git clone https://github.com/jimmyag2026-prog/review-agent-skill ~/.openclaw/skills/review-agent
-cd ~/.openclaw/skills/review-agent
+git clone https://github.com/jimmyag2026-prog/review-agent-skill ~/code/review-agent-skill
+cd ~/code/review-agent-skill
 bash install.sh
 ```
 
-The installer copies the workspace template to `~/.openclaw/workspace/templates/review-agent/`, seeds `~/.openclaw/review-agent/responder-profile.md`, and wires `channels.feishu` in `~/.openclaw/openclaw.json` for dynamic-agent spawning.
+The installer copies the skill to `~/.openclaw/skills/review-agent/`, the workspace template to `~/.openclaw/workspace/templates/review-agent/`, seeds `~/.openclaw/review-agent/responder-profile.md`, and wires `channels.feishu` in `~/.openclaw/openclaw.json` for dynamic-agent spawning.
 
 ## What it does
 
@@ -52,4 +52,3 @@ If you have v1 installed via hermes, see the monorepo's `openclaw-v2/docs/V1_TO_
 
 - Main repo (history, design docs, issues): https://github.com/jimmyag2026-prog/review-agent
 - License: MIT
-- Author: see main repo
