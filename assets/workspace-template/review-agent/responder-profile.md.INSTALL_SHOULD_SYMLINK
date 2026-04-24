@@ -1,0 +1,10 @@
+# DO NOT COMMIT THIS FILE AS-IS
+#
+# The install script replaces this with:
+#   ln -s ~/.openclaw/review-agent/responder-profile.md responder-profile.md
+#
+# at the time each peer workspace is cloned from this template, so that every
+# peer workspace reads the SAME global responder profile.
+#
+# If you're seeing this file at runtime in a peer workspace, something in the
+# install wiring broke.

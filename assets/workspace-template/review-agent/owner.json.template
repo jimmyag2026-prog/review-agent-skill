@@ -1,0 +1,7 @@
+{
+  "admin_open_id": "__ADMIN_OPEN_ID__",
+  "admin_display_name": "__ADMIN_NAME__",
+  "responder_open_id": "__RESPONDER_OPEN_ID__",
+  "responder_name": "__RESPONDER_NAME__",
+  "note": "openclaw-managed; populated by install script. Rewritten if you re-run install.sh --enable."
+}
