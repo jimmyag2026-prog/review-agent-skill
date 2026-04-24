@@ -1,20 +1,34 @@
 #!/usr/bin/env python3
 """patch_openclaw_json.py — wire review-agent into ~/.openclaw/openclaw.json.
 
-What it does (idempotently):
+Applies the ONE correct key for feishu dynamic agents:
 
-1. `channels.feishu.dynamicAgents.enabled = true`
-2. `channels.feishu.dm.createAgentOnFirstMessage = true`
-3. `channels.feishu.workspaceTemplate = "~/.openclaw/workspace/templates/review-agent"`
-4. Seeds `channels.feishu.dmPolicy` to `"allowlist"` IF it's currently `"open"` —
-   production default should be allowlist for review-agent (don't expose to
-   random Lark users). Prints a notice so the admin knows to update allowFrom.
-   Skipped if user explicitly set allowFrom already.
+    channels.feishu.dynamicAgentCreation = {
+        "enabled": true,
+        "workspaceTemplate": "~/.openclaw/workspace/templates/review-agent",
+        "agentDirTemplate": "~/.openclaw/agents/{agentId}/agent",
+        "maxAgents": 100
+    }
 
-A timestamped backup is written before any write. No-op if everything is
-already in place.
+*not* the wecom-plugin keys `dynamicAgents` / `dm.createAgentOnFirstMessage` /
+top-level `workspaceTemplate`. Those are specific to the @sunnoy/wecom plugin
+(which declares `additionalProperties: true` in its schema) and are REJECTED
+by the feishu built-in channel schema with "invalid config: must NOT have
+additional properties".
 
-Usage:  python3 patch_openclaw_json.py [--force-allowlist]
+For backward compat: if an earlier version of this patcher left the bad
+wecom-style keys in the config, we clean them up before writing the correct
+key. That restores validity and brings the gateway back up.
+
+Also seeds `channels.feishu.unauthorized_dm_behavior = "pair"` IF the key
+is absent (respects explicit user choice; this is the hardening default).
+
+Idempotent — safe to re-run. Backup on every write.
+
+Usage:
+  python3 patch_openclaw_json.py
+  python3 patch_openclaw_json.py --force-allowlist
+  python3 patch_openclaw_json.py --no-cleanup   (keep wecom-style keys in place)
 """
 import argparse
 import json
@@ -26,11 +40,24 @@ from pathlib import Path
 
 OPENCLAW_JSON = Path.home() / ".openclaw" / "openclaw.json"
 
+FEISHU_DAC_TARGET = {
+    "enabled": True,
+    "workspaceTemplate": "~/.openclaw/workspace/templates/review-agent",
+    "agentDirTemplate": "~/.openclaw/agents/{agentId}/agent",
+    "maxAgents": 100,
+}
+
+# Legacy wrong-keys planted by pre-v2.1.1 patcher runs. We strip these so
+# feishu schema accepts the config again.
+LEGACY_BAD_KEYS = ("dynamicAgents", "dm", "workspaceTemplate")
+
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--force-allowlist", action="store_true",
                     help="force feishu.dmPolicy=allowlist even if currently open")
+    ap.add_argument("--no-cleanup", action="store_true",
+                    help="don't remove legacy wecom-style keys from channels.feishu")
     args = ap.parse_args()
 
     if not OPENCLAW_JSON.exists():
@@ -44,51 +71,53 @@ def main():
     channels = cfg.setdefault("channels", {})
     feishu = channels.setdefault("feishu", {})
 
-    # 1. dynamicAgents
-    da = feishu.setdefault("dynamicAgents", {})
-    if da.get("enabled") is not True:
-        da["enabled"] = True
-        changed.append("channels.feishu.dynamicAgents.enabled=true")
-    # keep adminBypass behavior; default to false for safety
-    if "adminBypass" not in da:
-        da["adminBypass"] = False
-        changed.append("channels.feishu.dynamicAgents.adminBypass=false (default)")
+    # 1. Cleanup legacy bad keys if present (from earlier broken patcher runs)
+    if not args.no_cleanup:
+        for bad in LEGACY_BAD_KEYS:
+            if bad in feishu:
+                # Be surgical: only remove `dm.createAgentOnFirstMessage`, not
+                # the entire `dm` sub-object (in case other `dm.*` keys exist
+                # and are valid). We know `dm` contained `createAgentOnFirstMessage`
+                # and that's the only key pre-v2.1.1 patcher wrote there.
+                if bad == "dm" and isinstance(feishu["dm"], dict):
+                    if "createAgentOnFirstMessage" in feishu["dm"]:
+                        del feishu["dm"]["createAgentOnFirstMessage"]
+                        changed.append("REMOVED legacy channels.feishu.dm.createAgentOnFirstMessage (feishu schema rejects this — it's a wecom-plugin key)")
+                    if not feishu["dm"]:
+                        del feishu["dm"]
+                else:
+                    del feishu[bad]
+                    changed.append(f"REMOVED legacy channels.feishu.{bad} (feishu schema rejects this — it's a wecom-plugin key)")
 
-    # 2. dm.createAgentOnFirstMessage
-    dm = feishu.setdefault("dm", {})
-    if dm.get("createAgentOnFirstMessage") is not True:
-        dm["createAgentOnFirstMessage"] = True
-        changed.append("channels.feishu.dm.createAgentOnFirstMessage=true")
+    # 2. Write the correct feishu-native key: dynamicAgentCreation
+    existing = feishu.get("dynamicAgentCreation") or {}
+    merged = dict(existing)
+    for k, v in FEISHU_DAC_TARGET.items():
+        if merged.get(k) != v:
+            merged[k] = v
+    if merged != existing:
+        feishu["dynamicAgentCreation"] = merged
+        changed.append("channels.feishu.dynamicAgentCreation = "
+                       f"{{enabled: True, maxAgents: {FEISHU_DAC_TARGET['maxAgents']}, workspaceTemplate: …, agentDirTemplate: …}}")
 
-    # 3. workspaceTemplate
-    wt_expected = "~/.openclaw/workspace/templates/review-agent"
-    if feishu.get("workspaceTemplate") != wt_expected:
-        # Don't clobber a user-customized value silently — but if it's unset,
-        # populate ours.
-        if "workspaceTemplate" not in feishu:
-            feishu["workspaceTemplate"] = wt_expected
-            changed.append(f"channels.feishu.workspaceTemplate={wt_expected}")
-        else:
-            print(f"note: channels.feishu.workspaceTemplate is set to "
-                  f"'{feishu['workspaceTemplate']}' (not our default). "
-                  f"Leaving it — if you intended to use review-agent's "
-                  f"template, set it to: {wt_expected}",
-                  file=sys.stderr)
+    # 3. Hardening default: seed unauthorized_dm_behavior=pair if absent
+    if "unauthorized_dm_behavior" not in feishu:
+        feishu["unauthorized_dm_behavior"] = "pair"
+        changed.append("channels.feishu.unauthorized_dm_behavior = 'pair' (new key)")
 
-    # 4. dmPolicy (opt-in to allowlist tightening)
+    # 4. Optional: tighten to allowlist
     if args.force_allowlist:
         if feishu.get("dmPolicy") != "allowlist":
             feishu["dmPolicy"] = "allowlist"
             if "allowFrom" not in feishu:
                 feishu["allowFrom"] = []
-            changed.append("channels.feishu.dmPolicy=allowlist (forced)")
-            print("note: review-agent is now allowlist-only. Add your"
-                  " Requesters' open_ids to channels.feishu.allowFrom"
-                  " before they try to DM the bot.",
+            changed.append("channels.feishu.dmPolicy = 'allowlist' (forced)")
+            print("note: allowlist mode — add your Requesters' open_ids to "
+                  "channels.feishu.allowFrom before testing.",
                   file=sys.stderr)
 
     if not changed:
-        print("already wired — no changes.")
+        print("already wired correctly — no changes.")
         return
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
