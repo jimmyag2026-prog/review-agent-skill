@@ -40,10 +40,18 @@ from pathlib import Path
 
 OPENCLAW_JSON = Path.home() / ".openclaw" / "openclaw.json"
 
+# NOTE: workspaceTemplate / agentDirTemplate must be ABSOLUTE paths.
+# openclaw's `resolveUserPath()` DOES expand `~/` in some code paths but not
+# all — reported on Linux VPS that subagents couldn't find the template when
+# workspaceTemplate was written as `~/.openclaw/...`. Writing the absolute
+# path from Python's Path.home() at patch time is the safe option. The
+# `{agentId}` placeholder is an openclaw template token (double-braced in
+# the f-string to escape .format()).
+_HOME = str(Path.home())
 FEISHU_DAC_TARGET = {
     "enabled": True,
-    "workspaceTemplate": "~/.openclaw/workspace/templates/review-agent",
-    "agentDirTemplate": "~/.openclaw/agents/{agentId}/agent",
+    "workspaceTemplate": f"{_HOME}/.openclaw/workspace-{{agentId}}",
+    "agentDirTemplate": f"{_HOME}/.openclaw/agents/{{agentId}}/agent",
     "maxAgents": 100,
 }
 

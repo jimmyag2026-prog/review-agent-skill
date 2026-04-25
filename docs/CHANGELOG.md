@@ -2,6 +2,56 @@
 
 All notable changes to review-agent are tracked here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.1.2] — 2026-04-24 (Linux compat + absolute path hotfix)
+
+### 🔴 Fixed — two VPS blockers
+
+**1. `feishu_seed_workspace_patch.py` hardcoded macOS Homebrew path**
+
+The patcher had `DEFAULT_MONITOR = Path("/opt/homebrew/lib/node_modules/openclaw/dist/monitor-D9C3Olkl.js")`. On Linux VPS:
+- openclaw installs to `/usr/lib/node_modules/openclaw/dist/` (not `/opt/homebrew/...`)
+- File hash suffix is different (e.g. `6KpSIhEL` / `BAWxXKRf` / `BMI3D6x8` — newer builds also **split into multiple `monitor-*.js`** files)
+
+Result: patcher failed silently on every Linux install → subagents fell back to openclaw's default memorist persona instead of loading review-coach.
+
+**Fix**: replaced hardcoded path with **auto-discovery**:
+1. Ask `npm root -g` for the authoritative node_modules dir
+2. Search well-known install paths (macOS Apple Silicon / Intel brew / Linux system / user-local npm / project-local)
+3. Within each dir, glob `monitor-*.js` and pick the file that actually contains our anchor (`mkdir(agentDir, {recursive: true})`)
+4. Give a helpful error with all searched paths if nothing matches, and accept `--monitor-js <explicit>` as override
+
+Works on macOS (brew / pkg install) and Linux (npm install -g).
+
+**2. `patch_openclaw_json.py` wrote `~/.openclaw/...` path literals**
+
+openclaw's `resolveUserPath()` DOES expand `~/` in some code paths, but not all — reported on Linux VPS: subagents couldn't find the template because the workspaceTemplate value was literally `~/.openclaw/...` with the tilde unexpanded in some runtime context.
+
+Also: the previous patcher was conceptually wrong — it wrote `workspaceTemplate: "~/.openclaw/workspace/templates/review-agent"` (the SOURCE template dir), but openclaw's `workspaceTemplate` is actually the **OUTPUT path template** with `{agentId}` placeholder (where peer workspaces get created). That path is then passed through `resolveUserPath` + `.replace("{agentId}", agentId)` to produce the per-peer workspace path.
+
+**Fix**: patcher now writes **absolute** paths with the correct `{agentId}` placeholder, using `Path.home()` at patch-time:
+
+```json
+"dynamicAgentCreation": {
+  "enabled": true,
+  "workspaceTemplate": "/home/openclaw/.openclaw/workspace-{agentId}",
+  "agentDirTemplate": "/home/openclaw/.openclaw/agents/{agentId}/agent",
+  "maxAgents": 100
+}
+```
+
+(On macOS `Path.home()` gives `/Users/yourname/...`; on Linux `/home/youruser/...`. Either way: no ambiguity about HOME resolution.)
+
+### Recovery path for broken installs
+
+```bash
+cd ~/code/review-agent-skill && git pull
+python3 install/patch_openclaw_json.py                   # fixes the config
+python3 install/openclaw_patches/feishu_seed_workspace_patch.py  # re-applies monitor patch w/ auto-discovery
+openclaw gateway restart
+```
+
+Patchers are idempotent + auto-clean legacy bad keys.
+
 ## [2.1.1] — 2026-04-24 (hotfix)
 
 ### 🔴 Fixed — install.sh was bricking the gateway
