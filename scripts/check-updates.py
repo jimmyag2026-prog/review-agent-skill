@@ -9,7 +9,8 @@ Sources of truth:
   - remote version: GitHub releases API `tag_name`, stripped of leading 'v'
 
 Cache:
-  ~/.review-agent/.update-check.json   (ttl_seconds=86400)
+  ~/.openclaw/review-agent/.update-check.json   (ttl_seconds=86400)
+  (lives next to enabled.json; override with REVIEW_AGENT_ROOT env)
 
 Outputs (stdout):
   - "" (empty) when up to date, or if the check fails / is disabled
@@ -25,7 +26,7 @@ Flags:
   --oneline        emit a single line only (default)
   --json           emit a structured object
   --force          ignore cache TTL
-  --disable        touch ~/.review-agent/.update-check.disabled and exit 0
+  --disable        touch <cache_dir>/.update-check.disabled and exit 0
   --enable         remove the disable marker
 
 Exit codes:
@@ -54,7 +55,13 @@ CACHE_TTL_SECONDS = 24 * 3600
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 VERSION_FILE = SKILL_DIR / "VERSION"
-ROOT = Path(os.environ.get("REVIEW_AGENT_ROOT", Path.home() / ".review-agent"))
+# Cache lives next to enabled.json so all review-agent state is co-located.
+# Backward-compat: if old ~/.review-agent/ cache exists, prefer it (avoid
+# losing the "last checked" timestamp on upgrade).
+_LEGACY_ROOT = Path.home() / ".review-agent"
+_CANONICAL_ROOT = Path.home() / ".openclaw" / "review-agent"
+ROOT = Path(os.environ.get("REVIEW_AGENT_ROOT",
+                           _LEGACY_ROOT if _LEGACY_ROOT.exists() else _CANONICAL_ROOT))
 CACHE_FILE = ROOT / ".update-check.json"
 DISABLE_FILE = ROOT / ".update-check.disabled"
 

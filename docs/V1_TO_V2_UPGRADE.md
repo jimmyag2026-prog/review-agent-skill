@@ -11,9 +11,9 @@
 | Aspect | v1 (hermes) | v2 (openclaw) |
 |---|---|---|
 | Which bot/gateway to use | hermes gateway | openclaw gateway |
-| Where context lives | `~/.review-agent/users/<oid>/...` | `~/.openclaw/workspace-feishu-dm-<oid>/...` |
+| Where context lives | `~/.review-agent/users/<oid>/...` | `~/.openclaw/workspace-feishu-<oid>/...` |
 | Per-Requester agent | Shared main agent + MEMORY.md SOP routing | Dedicated subagent process per peer |
-| Routing | Prompt-based (SOP) | Config-based (`bindings` + `dynamicAgents`) |
+| Routing | Prompt-based (SOP) | Config-based (`bindings[]` for admin → main; `dynamicAgentCreation` for feishu peers, `dynamicAgents` for wecom peers) |
 | Outbound to Lark | `send-lark.sh` shell wrapper | Native `feishu_chat` tool |
 
 ## Upgrade steps

@@ -154,7 +154,12 @@ seed_one() {
     *) return ;;
   esac
   [ -d "\$NEW" ] || return
-  sleep 1   # give openclaw a beat to finish its own writeFileIfMissing
+  # Tight race: openclaw mkdir → writeFileIfMissing(memorist defaults) →
+  # spawn subagent (reads SOUL.md). Our cp -R must land BEFORE subagent
+  # spawn to avoid first-message memorist persona. 0.2s lets openclaw
+  # finish its writeFileIfMissing batch (we overwrite anyway via cp -R),
+  # while keeping the window tighter than a full second.
+  sleep 0.2
   cp -R "\$TPL/." "\$NEW/" 2>/dev/null
   # Symlink global responder-profile if it exists
   if [ -f "\$GLOBAL_PROFILE" ]; then

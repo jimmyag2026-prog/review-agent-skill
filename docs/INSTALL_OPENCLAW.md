@@ -29,11 +29,17 @@ The installer has **two phases**:
 - Prompts for your Lark open_id + display name
 - Writes owner.json into the template (inherited by every new peer workspace)
 - Substitutes `{responder_name}` placeholder in persona files
-- Patches `~/.openclaw/openclaw.json`:
-  - `channels.feishu.dynamicAgents.enabled = true`
-  - `channels.feishu.dm.createAgentOnFirstMessage = true`
-  - `channels.feishu.workspaceTemplate = "~/.openclaw/workspace/templates/review-agent"`
+- Patches `~/.openclaw/openclaw.json` (via `patch_openclaw_json.py`):
+  - `channels.feishu.dynamicAgentCreation.enabled = true`
+  - `channels.feishu.dynamicAgentCreation.workspaceTemplate = "<HOME>/.openclaw/workspace-{agentId}"`
+  - `channels.feishu.dynamicAgentCreation.agentDirTemplate = "<HOME>/.openclaw/agents/{agentId}/agent"`
+  - `bindings[*]` adds an entry routing the Admin's open_id → `agentId: main` (so admin DMs hit the main agent, not a review-coach subagent)
+  - `agents.defaults.sandbox.docker.binds` is scrubbed of any source paths under `~/.openclaw/workspace/` that aren't `workspace-feishu-*` / `workspace-wecom-*` (they would otherwise collide with per-peer sandbox allowed_roots)
+- Installs the peer-workspace seeder watcher (systemd / launchd / nohup, auto-detected)
+- Clears stale peer session caches
 - Restarts openclaw gateway
+
+> Note: `dynamicAgents` (without `Creation`) is the **wecom-plugin** key, accepted by `@sunnoy/wecom`. Feishu's built-in channel uses the strict-schema `dynamicAgentCreation` key. v2.0 / v2.1.0 patcher conflated them and bricked feishu installs — fixed in v2.1.1+.
 
 Non-interactive:
 ```bash
