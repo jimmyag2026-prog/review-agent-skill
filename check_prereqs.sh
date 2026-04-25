@@ -16,29 +16,38 @@ if [ "$(uname)" = "Darwin" ]; then OS="macos"
 elif [ -f /etc/os-release ]; then . /etc/os-release; OS="${ID:-linux}"
 fi
 
+# Resolve target openclaw HOME (honor env from install-openclaw.sh)
+OC_HOME="${OPENCLAW_HOME:-$HOME}"
+if [ -z "${OPENCLAW_HOME:-}" ] && [ "$(id -u)" = "0" ] && id openclaw >/dev/null 2>&1; then
+  OC_HOME="/home/openclaw"
+fi
+OPENCLAW_JSON="$OC_HOME/.openclaw/openclaw.json"
+
 echo "Prerequisite check for review-agent v2 (openclaw)"
-echo "Detected OS: $OS"
+echo "  OS: $OS"
+echo "  openclaw HOME: $OC_HOME"
+echo "  openclaw.json: $OPENCLAW_JSON"
 echo
 
 # openclaw CLI
 command -v openclaw >/dev/null 2>&1 \
   && ok "openclaw CLI ($(openclaw --version 2>&1 | head -1))" \
-  || fail "openclaw CLI not found" "install per https://clawhub.com or via your package manager"
+  || warn "openclaw CLI not in PATH" "if openclaw runs as system service this is OK; otherwise install per https://clawhub.com"
 
 # openclaw.json present
-if [ -f "$HOME/.openclaw/openclaw.json" ]; then
-  ok "~/.openclaw/openclaw.json exists"
+if [ -f "$OPENCLAW_JSON" ]; then
+  ok "openclaw.json exists at $OPENCLAW_JSON"
 else
-  fail "~/.openclaw/openclaw.json missing" "run 'openclaw setup' first"
+  fail "openclaw.json missing at $OPENCLAW_JSON" "run 'openclaw setup' as the target user first"
 fi
 
 # OpenRouter API key (either in openclaw.json or env)
 KEY_FOUND=0
-if [ -f "$HOME/.openclaw/openclaw.json" ]; then
+if [ -f "$OPENCLAW_JSON" ]; then
   KEY=$(python3 -c "
-import json, os
+import json
 try:
-  d = json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
+  d = json.load(open('$OPENCLAW_JSON'))
   k = d.get('models',{}).get('providers',{}).get('openrouter',{}).get('apiKey','')
   if k and not k.startswith('\${'): print('YES')
 except: pass
@@ -53,14 +62,38 @@ else
 fi
 
 # feishu channel enabled
-if [ -f "$HOME/.openclaw/openclaw.json" ]; then
+if [ -f "$OPENCLAW_JSON" ]; then
   FEISHU=$(python3 -c "
-import json, os
-d = json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
+import json
+d = json.load(open('$OPENCLAW_JSON'))
 print('YES' if d.get('channels',{}).get('feishu',{}).get('enabled') else 'NO')
 ")
   [ "$FEISHU" = "YES" ] && ok "feishu channel enabled" \
                        || fail "feishu channel not enabled in openclaw.json" "openclaw gateway restart after enabling"
+
+  # Sandbox binds collision pre-check (warning only — installer will offer fix)
+  BAD_BINDS=$(python3 -c "
+import json
+d = json.load(open('$OPENCLAW_JSON'))
+binds = d.get('agents',{}).get('defaults',{}).get('sandbox',{}).get('docker',{}).get('binds',[])
+base = '$OC_HOME/.openclaw/workspace'
+bad = [b for b in binds if isinstance(b,str) and b.startswith(base+'/') and 'workspace-feishu-' not in b and 'workspace-wecom-' not in b]
+print(len(bad))
+")
+  if [ "$BAD_BINDS" != "0" ]; then
+    warn "$BAD_BINDS sandbox.docker.binds entr(y/ies) collide with per-peer subagent allowed_roots" \
+         "installer will offer to auto-clear; or run: python3 patch_openclaw_json.py --clear-bad-binds"
+  fi
+fi
+
+# Daemon user check (root-targeting-non-root case)
+if [ "$(id -u)" = "0" ] && [ "$OC_HOME" != "/root" ]; then
+  DAEMON_USER=$(basename "$OC_HOME")
+  if id "$DAEMON_USER" >/dev/null 2>&1; then
+    ok "running as root, will install as user '$DAEMON_USER'"
+  else
+    warn "running as root but user matching $OC_HOME doesn't exist" "specify --target-user explicitly"
+  fi
 fi
 
 # python3 + version

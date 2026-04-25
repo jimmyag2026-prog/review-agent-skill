@@ -1,36 +1,47 @@
 #!/bin/bash
-# install-openclaw.sh — one-shot install of review-agent v2 into openclaw.
+# install.sh — one-shot install of review-agent v2.2 into openclaw
+# (standalone-skill-repo edition).
 #
 # Two phases:
 #   A. Install files (reversible, always runs)
-#       - ~/.openclaw/skills/review-agent/            (shared skill)
-#       - ~/.openclaw/workspace/templates/review-agent/  (per-peer template)
-#       - ~/.openclaw/review-agent/responder-profile.md  (global profile)
+#       - $OC_HOME/.openclaw/skills/review-agent/
+#       - $OC_HOME/.openclaw/workspace/templates/review-agent/
+#       - $OC_HOME/.openclaw/review-agent/responder-profile.md
 #   B. Enable (opt-in prompt)
-#       - Patch ~/.openclaw/openclaw.json channels.feishu knobs
+#       - Patch openclaw.json: dynamicAgentCreation, admin → main binding,
+#                              sandbox.docker.binds collision auto-fix
 #       - Seed Admin/Responder identity into workspace-template/owner.json
+#       - Install peer-workspace seeder watcher (systemd / launchd / nohup)
+#       - Clear stale peer session caches
 #       - Restart openclaw gateway
 #
-# Safe to re-run. No hermes required.
+# Auto-detects: macOS vs linux, root vs user, system vs user systemd, and
+# whether openclaw runs as a dedicated user (e.g. 'openclaw' on a VPS).
+#
+# Safe to re-run.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
 
 ADMIN_OID=""; ADMIN_NAME=""; RESPONDER_NAME=""
+TARGET_USER=""
 MODE="full"   # full | install-only | enable-only
 SKIP_RESTART=0
+SKIP_WATCHER=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --admin-open-id) ADMIN_OID="$2"; shift 2 ;;
-    --admin-name) ADMIN_NAME="$2"; shift 2 ;;
+    --admin-open-id)  ADMIN_OID="$2"; shift 2 ;;
+    --admin-name)     ADMIN_NAME="$2"; shift 2 ;;
     --responder-name) RESPONDER_NAME="$2"; shift 2 ;;
-    --install-only) MODE="install-only"; shift ;;
-    --enable-only)  MODE="enable-only"; shift ;;
-    --skip-restart) SKIP_RESTART=1; shift ;;
+    --target-user)    TARGET_USER="$2"; shift 2 ;;
+    --install-only)   MODE="install-only"; shift ;;
+    --enable-only)    MODE="enable-only"; shift ;;
+    --skip-restart)   SKIP_RESTART=1; shift ;;
+    --skip-watcher)   SKIP_WATCHER=1; shift ;;
     -h|--help)
-      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1"; exit 1 ;;
   esac
 done
@@ -43,70 +54,128 @@ banner() {
   echo -e "${BLUE}════════════════════════════════════════${NC}"
 }
 
-SKILL_DST="$HOME/.openclaw/skills/review-agent"
-TEMPLATE_DST="$HOME/.openclaw/workspace/templates/review-agent"
-GLOBAL_RA_DIR="$HOME/.openclaw/review-agent"
+# ─── detect target user + their HOME ───
+if [ -z "$TARGET_USER" ]; then
+  if [ "$(id -u)" = "0" ] && id openclaw >/dev/null 2>&1; then
+    TARGET_USER="openclaw"
+  else
+    TARGET_USER="$(whoami)"
+  fi
+fi
+
+if [ "$TARGET_USER" = "$(whoami)" ]; then
+  OC_HOME="$HOME"
+  RUN_AS=""
+else
+  OC_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)
+  if [ -z "$OC_HOME" ]; then
+    echo "error: user '$TARGET_USER' not found"; exit 2
+  fi
+  RUN_AS="sudo -u $TARGET_USER -H"
+fi
+
+SKILL_DST="$OC_HOME/.openclaw/skills/review-agent"
+TEMPLATE_DST="$OC_HOME/.openclaw/workspace/templates/review-agent"
+GLOBAL_RA_DIR="$OC_HOME/.openclaw/review-agent"
+
+oc_run() { if [ -n "$RUN_AS" ]; then $RUN_AS "$@"; else "$@"; fi; }
 
 phase_install() {
   banner "Phase A · Prereq check"
-  if ! bash "$SCRIPT_DIR/check_prereqs.sh"; then
+  if ! OPENCLAW_HOME="$OC_HOME" bash "$REPO_ROOT/check_prereqs.sh"; then
     echo -e "${RED}→ fix blocking issues above and re-run.${NC}"; exit 2
   fi
 
   banner "Phase A · Install skill (${SKILL_DST})"
-  mkdir -p "$(dirname "$SKILL_DST")"
+  oc_run mkdir -p "$(dirname "$SKILL_DST")"
+  # Copy the skill — exclude install/ops scripts and assets (they belong in
+  # the repo, not in the deployed skill dir)
   if command -v rsync >/dev/null 2>&1; then
-    rsync -a --delete --exclude=".git" --exclude=".DS_Store" --exclude="install.sh" --exclude="check_prereqs.sh" --exclude="patch_openclaw_json.py" --exclude="install" --exclude="assets" --exclude="docs" --exclude="README.md" \
+    oc_run rsync -a --delete \
+          --exclude=".git" --exclude=".DS_Store" \
+          --exclude="install.sh" --exclude="setup_watcher.sh" \
+          --exclude="check_prereqs.sh" --exclude="patch_openclaw_json.py" \
+          --exclude="vps-doctor.sh" --exclude="openclaw_patches" \
+          --exclude="assets" --exclude="docs" --exclude="README.md" \
+          --exclude="CHANGELOG.md" \
           "$REPO_ROOT/" "$SKILL_DST/"
   else
-    rm -rf "$SKILL_DST"; cp -R "$REPO_ROOT" "$SKILL_DST"
+    oc_run rm -rf "$SKILL_DST"; oc_run mkdir -p "$SKILL_DST"
+    for item in SKILL.md VERSION POST_INSTALL.md uninstall.sh update.sh scripts references; do
+      [ -e "$REPO_ROOT/$item" ] && oc_run cp -R "$REPO_ROOT/$item" "$SKILL_DST/"
+    done
   fi
-  chmod +x "$SKILL_DST"/scripts/*.py 2>/dev/null || true
+  oc_run chmod +x "$SKILL_DST"/scripts/*.py 2>/dev/null || true
   echo -e "${GREEN}✓${NC} skill installed"
 
   banner "Phase A · Install workspace template (${TEMPLATE_DST})"
-  mkdir -p "$(dirname "$TEMPLATE_DST")"
+  oc_run mkdir -p "$(dirname "$TEMPLATE_DST")"
   if command -v rsync >/dev/null 2>&1; then
-    rsync -a --delete --exclude=".git" --exclude=".DS_Store" \
+    oc_run rsync -a --delete --exclude=".git" --exclude=".DS_Store" \
           "$REPO_ROOT/assets/workspace-template/review-agent/" "$TEMPLATE_DST/"
   else
-    rm -rf "$TEMPLATE_DST"; cp -R "$REPO_ROOT/assets/workspace-template/review-agent" "$TEMPLATE_DST"
+    oc_run rm -rf "$TEMPLATE_DST"
+    oc_run cp -R "$REPO_ROOT/assets/workspace-template/review-agent" "$TEMPLATE_DST"
   fi
-  # Remove the install-only marker if present
-  rm -f "$TEMPLATE_DST/responder-profile.md.INSTALL_SHOULD_SYMLINK"
+  oc_run rm -f "$TEMPLATE_DST/responder-profile.md.INSTALL_SHOULD_SYMLINK"
   echo -e "${GREEN}✓${NC} template installed"
 
   banner "Phase A · Global responder profile (${GLOBAL_RA_DIR})"
-  mkdir -p "$GLOBAL_RA_DIR"
+  oc_run mkdir -p "$GLOBAL_RA_DIR"
   if [ ! -f "$GLOBAL_RA_DIR/responder-profile.md" ]; then
-    # Seed from v1's functional-default profile
     if [ -f "$REPO_ROOT/references/template/boss_profile.md" ]; then
-      cp "$REPO_ROOT/references/template/boss_profile.md" \
-         "$GLOBAL_RA_DIR/responder-profile.md"
-      echo -e "${GREEN}✓${NC} seeded responder-profile from functional default"
+      oc_run cp "$REPO_ROOT/references/template/boss_profile.md" \
+                "$GLOBAL_RA_DIR/responder-profile.md"
+      echo -e "${GREEN}✓${NC} seeded responder-profile from default"
     else
-      # fallback: placeholder
-      cat > "$GLOBAL_RA_DIR/responder-profile.md" <<'EOF'
+      oc_run bash -c "cat > '$GLOBAL_RA_DIR/responder-profile.md' <<'EOF'
 # Responder Profile (global)
-# Edit this file to describe the Responder's review standards.
-# Every peer workspace will symlink to here.
-EOF
-      echo -e "${YELLOW}!${NC} wrote placeholder responder-profile (no default found)"
+# Edit to describe the Responder's review standards.
+EOF"
+      echo -e "${YELLOW}!${NC} wrote placeholder responder-profile"
     fi
   else
     echo -e "${YELLOW}!${NC} responder-profile.md already exists — left as-is"
   fi
 
-  # Install symlink so every FUTURE template-clone inherits it.
-  # openclaw copies the template dir; a symlink in the template → resolves
-  # inside the cloned peer workspace to the absolute target. Make the symlink
-  # absolute-target:
-  ( cd "$TEMPLATE_DST" && rm -f responder-profile.md && \
-    ln -s "$GLOBAL_RA_DIR/responder-profile.md" responder-profile.md )
-  echo -e "${GREEN}✓${NC} template responder-profile.md → $GLOBAL_RA_DIR/responder-profile.md"
+  oc_run bash -c "cd '$TEMPLATE_DST' && rm -f responder-profile.md && \
+    ln -s '$GLOBAL_RA_DIR/responder-profile.md' responder-profile.md"
+  echo -e "${GREEN}✓${NC} template responder-profile.md → global"
 
   echo
-  echo -e "${GREEN}Phase A complete.${NC} Skill files are installed but openclaw is not yet wired."
+  echo -e "${GREEN}Phase A complete.${NC} Skill files installed; openclaw not yet wired."
+}
+
+# ─── Admin open_id discovery (interactive) ───
+discover_admin_oid() {
+  local LOGFILE
+  for cand in \
+    "/tmp/openclaw/openclaw-$(date +%Y-%m-%d).log" \
+    "$OC_HOME/.openclaw/logs/gateway.log" \
+    ; do
+    if [ -r "$cand" ]; then LOGFILE="$cand"; break; fi
+  done
+  local recent_oids=""
+  if [ -n "${LOGFILE:-}" ]; then
+    recent_oids=$(grep -oE 'received message from ou_[a-f0-9]{32}' "$LOGFILE" 2>/dev/null | \
+                  grep -oE 'ou_[a-f0-9]{32}' | sort -u | tail -5 || true)
+  fi
+  if [ -z "$recent_oids" ] && command -v journalctl >/dev/null 2>&1; then
+    recent_oids=$(journalctl -u openclaw --no-pager --since "24 hours ago" 2>/dev/null | \
+                  grep -oE 'received message from ou_[a-f0-9]{32}' | \
+                  grep -oE 'ou_[a-f0-9]{32}' | sort -u | tail -5 || true)
+  fi
+  if [ -n "$recent_oids" ]; then
+    echo "Recent feishu senders (from gateway log):"
+    echo "$recent_oids" | sed 's/^/  /'
+    echo
+    echo "If your open_id is in the list, paste it. Otherwise, send a DM to"
+    echo "your bot first (any text), then re-run this script."
+  else
+    echo "No recent feishu senders found in logs. Two ways to get your open_id:"
+    echo "  a) DM your bot a single message (anything), then re-run this script"
+    echo "  b) Look up via Lark Open API or your Lark profile (advanced)"
+  fi
 }
 
 phase_enable() {
@@ -119,191 +188,159 @@ phase_enable() {
   NON_INTERACTIVE=0
   [ -n "${ORIGINAL_ADMIN_OID:-}" ] && NON_INTERACTIVE=1
 
-  banner "Phase B · Identify Admin + Responder"
-  echo "Default: you are both Admin and Responder."
+  banner "Phase B · Identify Admin"
+  echo "Admin = the person who owns this bot."
+  echo "Admin DMs go to the MAIN openclaw agent (chat/admin), not the review subagent."
+  echo "Other Lark users (Requesters) get per-peer review-coach subagents."
+  echo
 
   if [ -z "$ADMIN_OID" ]; then
+    discover_admin_oid
     echo
-    echo "Tip: find your Lark open_id via 'openclaw pairing list' (feishu row)"
-    echo
-    openclaw pairing list 2>&1 | grep -i feishu | head -5 || true
-    echo
-    read -rp "Your Lark open_id (starts with 'ou_'): " ADMIN_OID
+    read -rp "Admin's Lark open_id (ou_xxx): " ADMIN_OID
   fi
   if [ -z "$ADMIN_OID" ] || [[ ! "$ADMIN_OID" =~ ^ou_ ]]; then
     echo -e "${RED}error:${NC} open_id required, must start with 'ou_'"; exit 3
   fi
-  [ -z "$ADMIN_NAME" ] && read -rp "Display name (blank for '$USER'): " ADMIN_NAME
-  [ -z "$ADMIN_NAME" ] && ADMIN_NAME="$USER"
+
+  [ -z "$ADMIN_NAME" ] && read -rp "Admin display name [$TARGET_USER]: " ADMIN_NAME
+  [ -z "$ADMIN_NAME" ] && ADMIN_NAME="$TARGET_USER"
+
+  echo
+  echo "Responder = the person whose review style the agent simulates."
+  echo "(Often the same as Admin, but can differ — e.g. you operate the bot, but"
+  echo " the agent reviews proposals as if your CEO were reviewing them.)"
+  [ -z "$RESPONDER_NAME" ] && read -rp "Responder name [$ADMIN_NAME]: " RESPONDER_NAME
   [ -z "$RESPONDER_NAME" ] && RESPONDER_NAME="$ADMIN_NAME"
 
-  # Seed owner.json into the template (every NEW peer workspace inherits it)
-  cat > "$TEMPLATE_DST/owner.json" <<EOF
+  banner "Phase B · Seed identity into template (${TEMPLATE_DST})"
+  oc_run bash -c "cat > '$TEMPLATE_DST/owner.json' <<EOF
 {
-  "admin_open_id": "$ADMIN_OID",
-  "admin_display_name": "$ADMIN_NAME",
-  "responder_open_id": "$ADMIN_OID",
-  "responder_name": "$RESPONDER_NAME",
-  "note": "openclaw-managed. Rewrite by re-running install-openclaw.sh --enable-only."
+  \"admin_open_id\": \"$ADMIN_OID\",
+  \"admin_display_name\": \"$ADMIN_NAME\",
+  \"responder_open_id\": \"$ADMIN_OID\",
+  \"responder_name\": \"$RESPONDER_NAME\",
+  \"note\": \"openclaw-managed. Re-run install.sh --enable-only to update.\"
 }
-EOF
-  rm -f "$TEMPLATE_DST/owner.json.template"   # cleanup template marker
+EOF"
+  oc_run rm -f "$TEMPLATE_DST/owner.json.template"
   echo -e "${GREEN}✓${NC} template owner.json seeded"
 
-  # Replace {responder_name} in persona files at template level so the
-  # cloned workspaces don't need a templating step
-  for f in "$TEMPLATE_DST/SOUL.md" "$TEMPLATE_DST/AGENTS.md" "$TEMPLATE_DST/HEARTBEAT.md"; do
-    [ -f "$f" ] && sed -i.bak "s|{responder_name}|$RESPONDER_NAME|g" "$f" && rm -f "$f.bak"
+  for f in SOUL.md AGENTS.md BOOTSTRAP.md HEARTBEAT.md IDENTITY.md USER.md; do
+    [ -f "$TEMPLATE_DST/$f" ] && \
+      oc_run sed -i.bak "s|{responder_name}|$RESPONDER_NAME|g" "$TEMPLATE_DST/$f" && \
+      oc_run rm -f "$TEMPLATE_DST/$f.bak"
   done
-  echo -e "${GREEN}✓${NC} persona files parameterized ({responder_name} → $RESPONDER_NAME)"
+  echo -e "${GREEN}✓${NC} {responder_name} → '$RESPONDER_NAME' in all persona files"
 
-  banner "Phase B · Patch ~/.openclaw/openclaw.json"
-  python3 "$SCRIPT_DIR/patch_openclaw_json.py"
+  banner "Phase B · Patch openclaw.json"
+  if [ -n "$RUN_AS" ]; then
+    $RUN_AS python3 "$REPO_ROOT/patch_openclaw_json.py" \
+      --admin-open-id "$ADMIN_OID" \
+      --openclaw-home "$OC_HOME" \
+      --clear-bad-binds
+  else
+    OPENCLAW_HOME="$OC_HOME" python3 "$REPO_ROOT/patch_openclaw_json.py" \
+      --admin-open-id "$ADMIN_OID" \
+      --openclaw-home "$OC_HOME" \
+      --clear-bad-binds
+  fi
 
   banner "Phase B · Profile sanity check"
   GPROFILE="$GLOBAL_RA_DIR/responder-profile.md"
-  if [ -f "$GPROFILE" ]; then
-    if ! python3 "$SKILL_DST/scripts/check-profile.py" "$GPROFILE"; then
-      echo -e "${YELLOW}!${NC} The global responder-profile still has placeholders."
+  if [ -f "$GPROFILE" ] && [ -f "$SKILL_DST/scripts/check-profile.py" ]; then
+    if ! oc_run python3 "$SKILL_DST/scripts/check-profile.py" "$GPROFILE" 2>/dev/null; then
+      echo -e "${YELLOW}!${NC} responder-profile has placeholder content."
       echo "    Edit to personalize: vim $GPROFILE"
-      echo "    Reviews work immediately but will be generic until you customize."
     fi
   fi
 
-  # Enabled stamp
-  mkdir -p "$GLOBAL_RA_DIR"
-  cat > "$GLOBAL_RA_DIR/enabled.json" <<EOF
+  if [ $SKIP_WATCHER -eq 0 ]; then
+    banner "Phase B · Install peer-workspace seeder watcher"
+    bash "$REPO_ROOT/setup_watcher.sh" --target-user "$TARGET_USER" || \
+      echo -e "${YELLOW}!${NC} watcher install had issues — peer subagents may load openclaw default persona"
+  else
+    echo -e "${YELLOW}!${NC} --skip-watcher: peer subagents will load openclaw default persona"
+    echo "    Install later: bash $REPO_ROOT/setup_watcher.sh"
+  fi
+
+  banner "Phase B · Clear stale peer session caches"
+  CLEARED=0
+  for ad in "$OC_HOME/.openclaw/agents/"feishu-* "$OC_HOME/.openclaw/agents/"wecom-*; do
+    [ -d "$ad/sessions" ] || continue
+    oc_run bash -c "rm -f '$ad/sessions/'*.jsonl '$ad/sessions/sessions.json' '$ad/sessions/'*.lock 2>/dev/null"
+    CLEARED=$((CLEARED+1))
+  done
+  echo "  ✓ cleared $CLEARED peer agent session cache(s)"
+
+  ADMIN_PEER_DIR="$OC_HOME/.openclaw/agents/feishu-${ADMIN_OID}"
+  ADMIN_WS="$OC_HOME/.openclaw/workspace-feishu-${ADMIN_OID}"
+  if [ -d "$ADMIN_PEER_DIR" ] || [ -d "$ADMIN_WS" ]; then
+    echo "  ! admin had a stale peer subagent — removing"
+    oc_run rm -rf "$ADMIN_PEER_DIR" "$ADMIN_WS"
+  fi
+
+  oc_run mkdir -p "$GLOBAL_RA_DIR"
+  oc_run bash -c "cat > '$GLOBAL_RA_DIR/enabled.json' <<EOF
 {
-  "enabled_at": "$(date -Iseconds)",
-  "skill_dst": "$SKILL_DST",
-  "template_dst": "$TEMPLATE_DST",
-  "admin_open_id": "$ADMIN_OID",
-  "version": "2.0.0"
+  \"enabled_at\": \"$(date -Iseconds)\",
+  \"version\": \"$(cat $REPO_ROOT/VERSION 2>/dev/null || echo 'unknown')\",
+  \"target_user\": \"$TARGET_USER\",
+  \"openclaw_home\": \"$OC_HOME\",
+  \"skill_dst\": \"$SKILL_DST\",
+  \"template_dst\": \"$TEMPLATE_DST\",
+  \"admin_open_id\": \"$ADMIN_OID\",
+  \"admin_display_name\": \"$ADMIN_NAME\",
+  \"responder_name\": \"$RESPONDER_NAME\"
 }
-EOF
+EOF"
 
-  # Gateway restart prompt
-  if [ $SKIP_RESTART -eq 0 ] && [ $NON_INTERACTIVE -eq 0 ]; then
-    echo
-    read -rp "Restart openclaw gateway now? [Y/n] " ANS
-    case "${ANS:-Y}" in
-      n|N|no|NO) echo "  skipped. Run manually: openclaw gateway restart" ;;
-      *)
-        echo "  running: openclaw gateway restart"
-        openclaw gateway restart 2>&1 | tail -5 \
-          && echo -e "  ${GREEN}✓${NC} gateway restarted" \
-          || echo -e "  ${YELLOW}!${NC} restart reported errors — check: openclaw gateway status"
-        ;;
-    esac
-  elif [ $SKIP_RESTART -eq 0 ]; then
-    echo
-    echo "! Run: openclaw gateway restart"
+  if [ $SKIP_RESTART -eq 0 ]; then
+    banner "Phase B · Restart openclaw"
+    if [ "$(id -u)" = "0" ] && systemctl is-active openclaw >/dev/null 2>&1; then
+      systemctl restart openclaw && \
+        echo -e "  ${GREEN}✓${NC} systemd service restarted"
+    elif command -v openclaw >/dev/null 2>&1; then
+      oc_run openclaw gateway restart 2>&1 | tail -3 && \
+        echo -e "  ${GREEN}✓${NC} gateway restarted"
+    else
+      echo -e "  ${YELLOW}!${NC} restart manually"
+    fi
   fi
 
-  # ── Apply the openclaw source patch (seed workspace with our template) ──
-  # Required for feishu dynamic agents to load review-coach persona instead
-  # of openclaw's default memorist template.
-  PATCHER="$SCRIPT_DIR/install/openclaw_patches/feishu_seed_workspace_patch.py"
-  if [ -f "$PATCHER" ]; then
-    banner "Phase B · Patch openclaw feishu seed (makes per-peer subagents load review-coach, not default)"
-    python3 "$PATCHER" || echo -e "${YELLOW}!${NC} patcher had issues — subagents may fall back to memorist persona. See docs/FIELD_NOTES.md"
-  fi
-
-  banner "Done — review-agent v2 ENABLED"
-
-  # ── Offer to DM the Admin a quickstart guide via Lark ──
-  if [ $NON_INTERACTIVE -eq 0 ] && command -v curl >/dev/null 2>&1; then
-    echo
-    read -rp "DM you the post-install quickstart guide via Lark? [Y/n] " ANS
-    case "${ANS:-Y}" in
-      n|N|no|NO) : ;;
-      *)
-        # Try to send POST_INSTALL.md summary to admin via Lark Open API
-        POST_INSTALL="$SKILL_DST/POST_INSTALL.md"
-        APP_ID=$(grep ^FEISHU_APP_ID ~/.hermes/.env 2>/dev/null | cut -d= -f2 | tr -d '"' | tr -d "'" | head -1)
-        APP_SECRET=$(grep ^FEISHU_APP_SECRET ~/.hermes/.env 2>/dev/null | cut -d= -f2 | tr -d '"' | tr -d "'" | head -1)
-        if [ -z "$APP_ID" ]; then
-          # Fallback to openclaw feishu config
-          APP_ID=$(python3 -c "
-import json
-d = json.load(open('$HOME/.openclaw/openclaw.json'))
-print(d.get('channels',{}).get('feishu',{}).get('accounts',{}).get('default',{}).get('appId',''))")
-          APP_SECRET=$(python3 -c "
-import json
-d = json.load(open('$HOME/.openclaw/openclaw.json'))
-print(d.get('channels',{}).get('feishu',{}).get('accounts',{}).get('default',{}).get('appSecret',''))")
-        fi
-        if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ] && [ -f "$POST_INSTALL" ]; then
-          echo "  sending quickstart to your Lark DM (open_id=$ADMIN_OID)…"
-          python3 <<PYEOF
-import json, urllib.request
-app_id, app_secret, admin_oid = "$APP_ID", "$APP_SECRET", "$ADMIN_OID"
-# tenant token
-r = urllib.request.urlopen(urllib.request.Request(
-    "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal",
-    data=json.dumps({"app_id": app_id, "app_secret": app_secret}).encode(),
-    headers={"Content-Type":"application/json"}), timeout=10)
-token = json.loads(r.read())["tenant_access_token"]
-# Digest of POST_INSTALL.md as text (trim to ~1500 chars)
-txt = open("$POST_INSTALL").read()
-# First 1500 chars — enough for the checklist; full file lives on disk
-msg = f"🔧 review-agent v2 安装完成\\n\\n全文见 ~/.openclaw/skills/review-agent/POST_INSTALL.md\\n\\n3 步 Admin checklist:\\n\\n1) 跑 openclaw seed patch:\\n   python3 ~/code/review-agent-skill/install/openclaw_patches/feishu_seed_workspace_patch.py\\n\\n2) 编辑你的 Responder profile:\\n   bash ~/code/review-agent-skill/assets/admin/setup-responder.sh\\n\\n3) openclaw gateway restart\\n\\n然后让一个 colleague DM 你的 bot 测试。gateway.log 看到 replies=1 就 OK。\\n\\n详细故障排查 + channel 兼容性 + uninstall 命令都在 POST_INSTALL.md 里。"
-body = json.dumps({"receive_id": admin_oid, "msg_type":"text", "content": json.dumps({"text": msg})})
-req = urllib.request.Request(
-    "https://open.larksuite.com/open-apis/im/v1/messages?receive_id_type=open_id",
-    data=body.encode(), headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"})
-try:
-    r = urllib.request.urlopen(req, timeout=10)
-    print("  ✓ quickstart DMed to your Lark")
-except Exception as e:
-    print(f"  ! DM failed (non-fatal): {e}")
-PYEOF
-        else
-          echo "  (skipped — missing Lark app creds or POST_INSTALL.md)"
-        fi
-        ;;
-    esac
-  fi
-
+  banner "Done — review-agent v2.2 ENABLED"
   cat <<EOF
 
-${YELLOW}Post-install checklist (full version in $SKILL_DST/POST_INSTALL.md):${NC}
+${BLUE}Summary${NC}
+  target user:       $TARGET_USER
+  openclaw HOME:     $OC_HOME
+  Admin:             $ADMIN_NAME ($ADMIN_OID) → routes to MAIN openclaw agent
+  Responder:         $RESPONDER_NAME (agent reviews as if they were reviewing)
+  Requesters:        any other Lark user → per-peer review-coach subagent
 
-${BLUE}1. Personalize Responder profile${NC} (10 min; bad defaults = generic reviews)
-     vim $GLOBAL_RA_DIR/responder-profile.md
+${BLUE}Verify${NC}
+  1. As Admin, DM the bot "你是谁".
+     Expect: regular openclaw assistant reply (not review-coach).
+  2. As a Requester (different Lark user), DM the bot a proposal/PDF/Lark doc URL.
+     Expect: review-coach reply with first finding.
 
-${BLUE}2. Grant Lark app scopes${NC} (for Lark wiki/doc pre-fetch to work):
-     im:message, im:message:send_as_bot, docx:document, wiki:wiki:readonly,
-     drive:file, drive:drive
-     (Lark developer console → your app → Permissions)
-
-${BLUE}3. Watch the dashboard${NC}:
-     python3 $REPO_ROOT/admin/dashboard-server.py   # http://127.0.0.1:8765
-
-${BLUE}4. First test${NC}: have a colleague DM your bot a proposal or Lark doc URL.
-     In the gateway log you should see:
-       creating dynamic agent "feishu-ou_..."
-       review-agent: seeded
-       dispatch complete (replies=1)
-
-${BLUE}Channel compatibility${NC}:
-  ✅ feishu / wecom → v2 full architecture (per-peer subagent)
-  ❌ telegram / whatsapp / discord / slack / iMessage → fallback to shared
-     main agent (no per-peer isolation). For those, consider hermes v1
-     (https://github.com/jimmyag2026-prog/review-agent).
-
-${BLUE}Full docs${NC}: https://github.com/jimmyag2026-prog/review-agent-skill/blob/main/POST_INSTALL.md
+${BLUE}Next${NC}
+  • Personalize: vim $GPROFILE
+  • Watch seeder log: tail -F $OC_HOME/.openclaw/seeder.log
+  • Self-heal anytime: bash $REPO_ROOT/vps-doctor.sh
 
 EOF
 }
 
-banner "review-agent v2 · install (openclaw)"
+banner "review-agent v2.2 · install (openclaw)"
+echo "  target user: $TARGET_USER  ($([ -n "$RUN_AS" ] && echo "via sudo" || echo "current user"))"
+echo "  openclaw HOME: $OC_HOME"
 
 case "$MODE" in
   install-only)
     phase_install
     echo; echo "To enable later:"
-    echo "     bash $SCRIPT_DIR/install-openclaw.sh --enable-only"
+    echo "     bash $REPO_ROOT/install.sh --enable-only"
     ;;
   enable-only) phase_enable ;;
   full)
@@ -313,26 +350,11 @@ case "$MODE" in
     else
       echo
       cat <<'INTRO'
-━━━ About review-agent v2 (openclaw) ━━━
-
-Review-agent is a CSW-style pre-meeting coach for Lark. In v2 each Requester
-gets their OWN dedicated subagent with isolated context — no prompt-level
-SOP routing. Your subordinates DM the bot, the agent runs four-pillar review
-+ simulates how you'd react, walks them through Q&A until the brief is
-signing-ready, then delivers a 6-section summary to both of you.
-
-Three roles:
-  • Admin     — you (manage config, responder profile)
+━━━ About review-agent v2 ━━━
+Per-peer review coach for Lark/Feishu (or WeCom). Three roles:
+  • Admin     — you (manage, DMs go to main openclaw agent)
   • Responder — whose review standards apply (you, by default)
-  • Requester — submits drafts (auto-enrolled on first DM)
-
-Requester commands (typed in Lark DM):
-  /review start <主题>    开启 review
-  /review end <理由>      结束当前 session
-  /review status          看进度
-  /review help            命令列表
-  (发 PDF/文档/链接或长文本会自动启动 review；普通聊天不受影响)
-
+  • Requester — submits drafts (auto-enrolled per-peer subagent)
 ━━━
 INTRO
       read -rp "Enable review-agent now? [y/N] " ENABLE_NOW
@@ -340,8 +362,8 @@ INTRO
         y|Y|yes|YES) phase_enable ;;
         *)
           echo
-          echo "${YELLOW}Skipped.${NC}  Skill files installed but openclaw isn't wired yet."
-          echo "When ready:  bash $SCRIPT_DIR/install-openclaw.sh --enable-only"
+          echo -e "${YELLOW}Skipped.${NC} Skill files installed but openclaw isn't wired yet."
+          echo "When ready: bash $REPO_ROOT/install.sh --enable-only"
           ;;
       esac
     fi

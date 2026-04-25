@@ -1,122 +1,145 @@
-# 🔧 POST-INSTALL · Admin checklist
+# 🔧 POST-INSTALL · Admin checklist (v2.2)
 
-_You just installed `review-agent`. Read this ONCE and follow the 3 steps. Everything else is automatic._
+_You just installed `review-agent`. Read this ONCE and follow the steps. Everything else is automatic._
 
 ## What you just got
 
-A **per-peer review coach** for Lark. Every Requester who DMs your Lark bot gets a dedicated subagent that runs four-pillar review + Responder simulation + Q&A loop, then hands you a 6-section decision brief.
+A **per-peer review coach** for Lark / WeCom. Every Requester who DMs your bot gets a dedicated subagent that runs four-pillar review + Responder simulation + Q&A loop, then hands you a 6-section decision brief.
 
-## Was it a ClawHub install or a bundle install?
+## Three roles
 
-**If you ran `clawhub install review-agent` (or `openclaw skills install review-agent`)** — you have the SKILL but you're missing the workspace template, `openclaw.json` patches, and the openclaw core patch that makes per-peer isolation work. Do this next:
+- **Admin** — you (manage config). Your DMs go to the **MAIN openclaw agent** (chat/admin), NOT the review subagent.
+- **Responder** — whose review standards apply. Often the same as Admin.
+- **Requester** — anyone else who DMs the bot. Auto-enrolled on first DM into a per-peer subagent.
 
+## Was it a bundle install or a clawhub install?
+
+**Bundle install (recommended)** — `bash install/install-openclaw.sh` from the repo. Runs Phase A (files) + Phase B (config + watcher + restart). Skip to "Verify" below.
+
+**ClawHub install (`clawhub install review-agent`)** — only the SKILL files land. You also need:
 ```bash
 git clone https://github.com/jimmyag2026-prog/review-agent-skill ~/code/review-agent-skill
 cd ~/code/review-agent-skill
-bash install.sh --enable-only
+bash install/install-openclaw.sh --enable-only
 ```
 
-**If you ran `bash install.sh` from the bundle repo** — you're already set up. Skip to step 2.
+The `--enable-only` Phase B does config patches, watcher install, session-cache clear, gateway restart.
 
-## 3-step Admin checklist
+## Verify (right after install)
 
-### 1. Apply the openclaw source patch (one-time, until openclaw natively supports template-clone)
+### 1. As Admin, DM the bot "你是谁" (or "who are you")
+- **Expect**: regular openclaw assistant reply. NOT a review-coach asking for materials.
+- **Log**: gateway log shows `dispatching to agent (session=agent:main:main)`.
+- **If you see review-coach instead**: the admin → main binding didn't land. Re-run:
+  ```bash
+  python3 ~/code/review-agent-skill/install/patch_openclaw_json.py --admin-open-id ou_xxx
+  ```
 
-openclaw core's feishu `dynamicAgentCreation` creates a new peer workspace but **seeds it with a generic "memorist" persona by default**, not with our review-coach persona. The patch makes our template win:
+### 2. As a Requester (a DIFFERENT Lark user), DM the bot a proposal
+- **Expect**: review-coach reply with first finding ("我扫到 N 条问题. 先带你过最关键的 5 条…")
+- **Log**: gateway shows `creating dynamic agent feishu-ou_xxx`; seeder log shows `seeded .../workspace-feishu-ou_xxx`
+- **If you see "Hey I just came online, who am I?"**: watcher didn't seed. Check:
+  ```bash
+  tail -10 ~/.openclaw/seeder.log
+  systemctl --user status review-agent-seeder    # or: systemctl status review-agent-seeder
+  ```
+
+### 3. Watch the seeder log live
+```bash
+tail -F ~/.openclaw/seeder.log
+```
+
+## Daily ops
 
 ```bash
-python3 ~/code/review-agent-skill/install/openclaw_patches/feishu_seed_workspace_patch.py
-openclaw gateway restart
-```
-
-Idempotent; safe to re-run after `openclaw update` overwrites the file.
-
-### 2. Personalize the global Responder profile
-
-Your review standards, pet peeves, decision style, "always-ask" questions. Bad default → generic reviews.
-
-```bash
-bash ~/code/review-agent-skill/assets/admin/setup-responder.sh
-# opens ~/.openclaw/review-agent/responder-profile.md in $EDITOR
-```
-
-### 3. Restart and first-test
-
-```bash
-openclaw gateway restart
-```
-
-Then have a colleague (or a test Lark account) DM your bot a proposal or Lark wiki link. You should see in the gateway log:
-
-```
-creating dynamic agent "feishu-ou_xxx..."
-review-agent: seeded <workspace>
-dispatching to agent (session=agent:feishu-ou_xxx:main)
-dispatch complete (queuedFinal=true, replies=1)
-```
-
-The Lark account receives a persona-correct reply. Done.
-
-## Channel compatibility
-
-Per-peer subagent auto-spawn is only supported on **feishu** (openclaw core) and **wecom** (via `@sunnoy/wecom` plugin). Other channels fall back to shared-main-agent mode:
-
-| Channel | Per-peer subagent | Behavior |
-|---|---|---|
-| feishu / lark | ✅ | v2 full architecture |
-| wecom | ✅ | v2 full architecture |
-| telegram | ❌ | skill runs in main agent, all Requesters share context |
-| whatsapp | ❌ | same |
-| discord / slack / iMessage | ❌ | same |
-
-Non-feishu/wecom channels are usable but without per-peer context isolation. For those you probably want hermes v1.x instead (`github.com/jimmyag2026-prog/review-agent`).
-
-## Lark app scopes you'll likely need
-
-For review-agent to pre-fetch Lark wiki/docx URLs the Requester sends, grant these in your Lark app console:
-
-- `im:message:send_as_bot`  (outbound replies)
-- `im:message`              (inbound reception)
-- `docx:document`            (read Lark docx)
-- `wiki:wiki:readonly`       (read Lark wiki)
-- `drive:file` + `drive:drive` (share Lark docs to Responder + Requester)
-
-Without these, the subagent will politely ask the Requester to paste text instead.
-
-## Day-to-day admin
-
-```bash
-# check for updates
-bash ~/.openclaw/skills/review-agent/update.sh --check
-
 # update to latest
 bash ~/.openclaw/skills/review-agent/update.sh
 
-# dashboard
-python3 ~/code/review-agent-skill/assets/admin/dashboard-server.py
-# then browse http://127.0.0.1:8765
+# check version
+cat ~/.openclaw/skills/review-agent/VERSION
 
-# remove a peer (e.g., colleague who left)
-bash ~/code/review-agent-skill/assets/admin/remove-peer.sh ou_xxxxxxxx
+# customize Responder profile (10 min — bad defaults give generic reviews)
+vim ~/.openclaw/review-agent/responder-profile.md
 
-# uninstall (keep sessions)
+# self-heal anything that breaks (idempotent)
+bash ~/code/review-agent-skill/scripts/vps-doctor.sh
+
+# uninstall (keep peer sessions)
 bash ~/.openclaw/skills/review-agent/uninstall.sh --yes
 
-# uninstall everything INCLUDING all peer data (irreversible)
+# nuke everything
 bash ~/.openclaw/skills/review-agent/uninstall.sh --yes --purge --revert-config
+```
+
+## Channel compatibility
+
+| Channel | Per-peer subagent | Mechanism |
+|---|---|---|
+| **feishu / lark** | ✅ full v2 | openclaw `dynamicAgentCreation` + watcher seeds template |
+| **wecom** | ✅ full v2 | `@sunnoy/wecom` plugin + `dynamicAgents` + watcher |
+| **telegram** | ❌ | falls back to shared main agent |
+| **whatsapp** | ❌ | same |
+| **discord / slack / iMessage** | ❌ | same |
+
+For non-feishu/wecom channels, run `bash scripts/setup-shared-mode.sh` to install review-coach persona on the main agent (all Requesters share context — fine for ≤3 active users). Or use [hermes v1](https://github.com/jimmyag2026-prog/review-agent) which has true per-peer routing for all channels.
+
+## Lark app scopes (for Lark wiki/doc pre-fetch)
+
+```
+im:message:send_as_bot     im:message
+docx:document              wiki:wiki:readonly
+drive:file                 drive:drive
+```
+
+Set in Lark developer console → your app → Permissions. Without these, the subagent will politely ask the Requester to paste text instead.
+
+## Architecture summary (v2.2)
+
+```
+Lark DM
+  ├─ from Admin (open_id matches enabled.json admin_open_id)
+  │     → bindings[*] routes to agent:main → openclaw default assistant
+  │
+  └─ from Requester (any other open_id)
+        → channels.feishu.dynamicAgentCreation creates workspace-feishu-<oid>/
+        → watcher (systemd/launchd/nohup) seeds review-agent template within ~1s
+        → openclaw spawns peer subagent reading SOUL.md + AGENTS.md + responder-profile.md (symlink → global)
+        → review-coach behavior takes over
+```
+
+Key files written by install:
+
+```
+~/.openclaw/skills/review-agent/                      # the skill (scripts + references)
+~/.openclaw/workspace/templates/review-agent/         # template seeded into peer workspaces
+~/.openclaw/review-agent/responder-profile.md         # global Responder persona
+~/.openclaw/review-agent/enabled.json                 # marker + admin_open_id + responder_name
+~/.openclaw/review-agent-seeder.sh                    # the watcher script (auto-generated)
+~/.openclaw/openclaw.json                             # patched: dynamicAgentCreation + admin binding + binds cleanup
 ```
 
 ## Troubleshooting
 
-- **`replies=0` on dispatch_complete** → subagent's `message` tool call has wrong `target`. Check the subagent's jsonl for bare open_ids. Our SOUL.md forbids this but older sessions may have cached. Clear: `rm -f ~/.openclaw/agents/feishu-ou_*/sessions/*.jsonl` then re-test.
-- **Subagent replies with "Hey I just came online, who am I?"** → the feishu-seed patch didn't land. Run step 1 again and confirm `grep "review-agent local patch" /opt/homebrew/lib/node_modules/openclaw/dist/monitor-D9C3Olkl.js` returns a line.
-- **"Thinking Process:" shows up in Lark replies** → SOUL.md didn't load. Check `~/.openclaw/workspace-feishu-<open_id>/SOUL.md` exists and contains "不要填 target 字段".
-- **Each DM triggers a new `creating dynamic agent` log line** → harmless. openclaw re-spawns per-message due to an internal consistency quirk. The cp -R seed is idempotent; your workspace data is preserved.
-- **`Access denied ... wiki:wiki:readonly`** → grant the Lark app the wiki scope (see "Lark app scopes" above).
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| "Something went wrong while processing your request" | sandbox.docker.binds collision (binds outside per-peer allowed_roots) | `python3 install/patch_openclaw_json.py --clear-bad-binds` |
+| Admin DM gets review-coach reply (asks for materials) | admin → main binding missing or wrong open_id | `python3 install/patch_openclaw_json.py --admin-open-id ou_xxx` |
+| Requester DM gets "Hey I just came online" | watcher not running or template missing | `bash install/setup_watcher.sh` |
+| `replies=0` on dispatch | subagent's `message` tool used wrong target format | clear sessions: `rm ~/.openclaw/agents/feishu-ou_*/sessions/*.jsonl` |
+| Reply contains "Thinking Process:" | SOUL.md not loaded | check workspace SOUL.md exists & contains "不要填 target 字段" |
+| Each DM logs "creating dynamic agent" | harmless — openclaw re-attaches per message; cp -R is idempotent | none |
+| `Access denied wiki:wiki:readonly` | Lark app missing scope | grant in Lark developer console |
+
+If anything is unclear or stuck, run the diagnostic+heal-all script:
+
+```bash
+bash ~/code/review-agent-skill/scripts/vps-doctor.sh
+```
+
+It's idempotent — safe to run any time.
 
 ## Full docs
 
-- Monorepo (history + v1 hermes variant + design docs): https://github.com/jimmyag2026-prog/review-agent
+- Monorepo (history + v1 hermes + design): https://github.com/jimmyag2026-prog/review-agent
 - Standalone skill bundle: https://github.com/jimmyag2026-prog/review-agent-skill
-- ClawHub: https://clawhub.com/skills/review-agent
-- Field notes (every bug we've hit): `openclaw-v2/docs/FIELD_NOTES.md` in the monorepo
+- Field notes: `openclaw-v2/docs/FIELD_NOTES.md` in monorepo
