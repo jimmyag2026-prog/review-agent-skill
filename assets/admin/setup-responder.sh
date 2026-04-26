@@ -1,40 +1,191 @@
 #!/bin/bash
-# setup-responder.sh — edit the global responder profile that every peer
-# workspace reads via symlink.
+# setup-responder.sh — manage the global responder profile that drives
+# every review-coach session.
 #
-# Usage:
-#   setup-responder.sh          # open in $EDITOR
-#   setup-responder.sh --show   # cat the file
-#   setup-responder.sh --reset  # restore the functional-default template
+# Modes:
+#   setup-responder.sh                # show status, suggest next action
+#   setup-responder.sh --guided       # 5-question wizard (recommended for new admins)
+#   setup-responder.sh --edit         # open in $EDITOR (no questions)
+#   setup-responder.sh --show         # cat the current profile
+#   setup-responder.sh --check        # report what % is filled vs placeholder
+#   setup-responder.sh --reset        # restore the default template (backup made)
 set -euo pipefail
+
+GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
 
 GLOBAL_RA="$HOME/.openclaw/review-agent"
 PROFILE="$GLOBAL_RA/responder-profile.md"
 SKILL="$HOME/.openclaw/skills/review-agent"
+ENABLED_JSON="$GLOBAL_RA/enabled.json"
 
 if [ ! -f "$PROFILE" ]; then
-  echo "error: $PROFILE not found."
-  echo "  review-agent v2 not installed. Run install-openclaw.sh first."
+  echo -e "${RED}error:${NC} $PROFILE not found."
+  echo "  review-agent v2 not installed. Run install.sh first."
   exit 2
 fi
 
-case "${1:-edit}" in
-  --show|show) cat "$PROFILE" ;;
+resolve_responder_name() {
+  if [ -f "$ENABLED_JSON" ] && command -v python3 >/dev/null 2>&1; then
+    python3 -c "import json; print(json.load(open('$ENABLED_JSON')).get('responder_name','Responder'))" 2>/dev/null || echo "Responder"
+  else
+    echo "Responder"
+  fi
+}
+
+clear_session_caches() {
+  local n=0
+  for ad in "$HOME/.openclaw/agents/"feishu-* "$HOME/.openclaw/agents/"wecom-*; do
+    [ -d "$ad/sessions" ] || continue
+    rm -f "$ad/sessions/"*.jsonl "$ad/sessions/sessions.json" 2>/dev/null
+    n=$((n+1))
+  done
+  echo "  → cleared $n peer session cache(s) (next message will re-read profile)"
+}
+
+show_status() {
+  local name=$(resolve_responder_name)
+  echo -e "${BLUE}── responder profile status ──${NC}"
+  echo "  file:           $PROFILE"
+  echo "  responder name: $name (from $ENABLED_JSON)"
+  echo
+
+  if command -v python3 >/dev/null 2>&1 && [ -f "$SKILL/scripts/check-profile.py" ]; then
+    if python3 "$SKILL/scripts/check-profile.py" "$PROFILE" 2>&1; then
+      echo -e "  ${GREEN}✓${NC} profile looks personalized"
+    else
+      echo -e "  ${YELLOW}!${NC} profile still has placeholder content — generic reviews"
+    fi
+  fi
+  echo
+  echo "  current head (first 15 lines):"
+  head -15 "$PROFILE" | sed 's/^/    /'
+}
+
+guided_wizard() {
+  local NAME=$(resolve_responder_name)
+  echo -e "${BLUE}── guided responder profile setup ──${NC}"
+  echo
+  echo "I'll ask 5 questions. Each answer becomes part of the system"
+  echo "prompt that the review-coach uses on every session. Skip with"
+  echo "blank input to keep the existing value (read from current profile)."
+  echo
+  echo "Responder name: $NAME (from enabled.json)"
+  echo "If wrong, edit $ENABLED_JSON, then re-run this."
+  echo
+  read -rp "Continue? [Y/n] " ans
+  case "${ans:-Y}" in n|N) echo "aborted."; exit 0 ;; esac
+
+  local ROLE DECISION_STYLE PEEVES Q1 Q2 Q3
+  echo
+  echo -e "${CYAN}1/5 · Your role / context.${NC}"
+  echo "  (e.g., \"founder of an AI startup\" / \"head of product\" / \"CFO of a 50-person co\")"
+  echo "  This frames what reviews are aimed at."
+  read -rp "  ROLE: " ROLE
+  [ -z "$ROLE" ] && ROLE="senior decision-maker"
+
+  echo
+  echo -e "${CYAN}2/5 · Decision style.${NC} How do you decide?"
+  echo "  (e.g., \"data-first, fast yes/no\" / \"discusses options first, decides last\" / "
+  echo "         \"asks for ROI numbers before anything else\")"
+  read -rp "  STYLE: " DECISION_STYLE
+  [ -z "$DECISION_STYLE" ] && DECISION_STYLE="data-first, fast yes/no"
+
+  echo
+  echo -e "${CYAN}3/5 · Pet peeves — what kills a brief for you?${NC}"
+  echo "  (e.g., \"vague asks without numbers\" / \"recommendations creating follow-up work\" /"
+  echo "         \"mentioning competitors without naming specifics\")"
+  read -rp "  PEEVES: " PEEVES
+  [ -z "$PEEVES" ] && PEEVES="vague asks, missing numbers, recommendations that create more work than they save"
+
+  echo
+  echo -e "${CYAN}4/5 · The 3 questions you ALWAYS ask in a review.${NC}"
+  echo "  These force review-agent to surface the answers proactively."
+  read -rp "  Q1 (one short question): " Q1
+  [ -z "$Q1" ] && Q1="What's the smallest version testable in a week?"
+  read -rp "  Q2: " Q2
+  [ -z "$Q2" ] && Q2="Who internally disagrees with this and why?"
+  read -rp "  Q3: " Q3
+  [ -z "$Q3" ] && Q3="What does the failure mode look like, and what's the cost?"
+
+  echo
+  echo -e "${CYAN}5/5 · Anything else specific to your style?${NC}"
+  echo "  (free-form; e.g., \"I hate slide decks; I want one-page memos.\""
+  echo "                    \"Skip exec summaries, just give me the ask and the unknowns.\")"
+  echo "  Press Enter to skip."
+  read -rp "  EXTRA: " EXTRA
+
+  local TS=$(date +%Y%m%d_%H%M%S)
+  cp "$PROFILE" "$PROFILE.bak.$TS"
+
+  cat > "$PROFILE" <<EOF
+# Responder Profile
+
+> The agent reviews proposals as if **$NAME** were doing the review.
+> Generated by setup-responder.sh --guided on $(date -Iseconds).
+> Edit any line below to refine; clear peer session caches after to apply.
+
+## Identity
+
+- **Name**: $NAME
+- **Role**: $ROLE
+
+## Decision style
+
+$DECISION_STYLE
+
+## Pet peeves (what kills a brief)
+
+$PEEVES
+
+## The 3 questions $NAME always asks
+
+1. $Q1
+2. $Q2
+3. $Q3
+EOF
+
+  if [ -n "$EXTRA" ]; then
+    cat >> "$PROFILE" <<EOF
+
+## Other style notes
+
+$EXTRA
+EOF
+  fi
+
+  echo
+  echo -e "${GREEN}✓ wrote $PROFILE${NC} (backup: $PROFILE.bak.$TS)"
+  echo
+  clear_session_caches
+  echo
+  echo "Done. Next Lark DM from a Requester will use the updated profile."
+  echo "To refine further, run: $0 --edit"
+}
+
+case "${1:-status}" in
+  --guided|guided)   guided_wizard ;;
+  --edit|edit)
+    : "${EDITOR:=vim}"; $EDITOR "$PROFILE"
+    python3 "$SKILL/scripts/check-profile.py" "$PROFILE" 2>/dev/null || true
+    clear_session_caches
+    ;;
+  --show|show)       cat "$PROFILE" ;;
+  --check|check)     python3 "$SKILL/scripts/check-profile.py" "$PROFILE" ;;
   --reset|reset)
     SRC="$SKILL/references/template/boss_profile.md"
-    if [ ! -f "$SRC" ]; then
-      echo "error: default profile not found at $SRC"; exit 3
-    fi
+    [ ! -f "$SRC" ] && { echo "error: default profile not found at $SRC"; exit 3; }
     cp "$PROFILE" "$PROFILE.bak.$(date +%s)"
     cp "$SRC" "$PROFILE"
+    sed -i.bak "s|^- \\*\\*Name\\*\\*: Responder$|- **Name**: $(resolve_responder_name)|" "$PROFILE" && rm -f "$PROFILE.bak"
     echo "✓ responder-profile reset to default (backup written)"
+    clear_session_caches
     ;;
-  --check|check)
-    python3 "$SKILL/scripts/check-profile.py" "$PROFILE"
-    ;;
-  edit|*)
-    : "${EDITOR:=vim}"
-    $EDITOR "$PROFILE"
-    python3 "$SKILL/scripts/check-profile.py" "$PROFILE" || true
+  --status|status|*)
+    show_status
+    echo
+    echo "Next:"
+    echo "  $0 --guided   # 5-question wizard (recommended)"
+    echo "  $0 --edit     # raw edit in \$EDITOR"
+    echo "  $0 --check    # see what's still placeholder"
     ;;
 esac

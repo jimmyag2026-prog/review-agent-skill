@@ -331,16 +331,51 @@ ${BLUE}Summary${NC}
   Responder:         $RESPONDER_NAME (agent reviews as if they were reviewing)
   Requesters:        any other Lark user → per-peer review-coach subagent
 
-${BLUE}Verify${NC}
-  1. As Admin, DM the bot "你是谁".
-     Expect: regular openclaw assistant reply (not review-coach).
-  2. As a Requester (different Lark user), DM the bot a proposal/PDF/Lark doc URL.
-     Expect: review-coach reply with first finding.
+${BLUE}━━━ 5-minute Admin onboarding ━━━${NC}
 
-${BLUE}Next${NC}
-  • Personalize: vim $GPROFILE
-  • Watch seeder log: tail -F $OC_HOME/.openclaw/seeder.log
-  • Self-heal anytime: bash $REPO_ROOT/vps-doctor.sh
+${YELLOW}Step 1.${NC} Verify routing (30s):
+  In Lark, DM your bot "who are you" — expect a normal openclaw
+  assistant reply. (If you get a review-coach asking for materials,
+  the admin → main binding didn't land — run vps-doctor.sh.)
+
+${YELLOW}Step 2.${NC} ${RED}MOST IMPORTANT — fill the Responder profile (3 min):${NC}
+  Without this step, every review will produce generic findings that
+  don't match how you'd actually review.
+
+      bash $REPO_ROOT/assets/admin/setup-responder.sh --guided
+
+  5 questions: your role, decision style, pet peeves, must-ask
+  questions, style notes. Auto-clears peer session caches when done.
+
+${YELLOW}Step 3.${NC} First test (1 min):
+  Have a DIFFERENT Lark user (not you) DM the bot a brief proposal.
+  Expect a review-coach reply with first finding.
+
+${BLUE}━━━ After your first real review ━━━${NC}
+
+  Open the session brief and compare to what you'd write yourself:
+      ls $OC_HOME/.openclaw/workspace-feishu-<oid>/sessions/<sid>/
+
+  See ADMIN_GUIDE.md for the feedback loop on refining the profile
+  based on real review output:
+      $REPO_ROOT/ADMIN_GUIDE.md
+
+${BLUE}━━━ Day-to-day commands ━━━${NC}
+
+  setup-responder.sh             # status / wizard / edit / check / reset
+  $REPO_ROOT/vps-doctor.sh       # idempotent self-heal anytime
+  $SKILL_DST/update.sh           # check / install latest version
+  $SKILL_DST/uninstall.sh --yes  # remove (keep peer history)
+
+  watch logs:
+    tail -F /tmp/openclaw/openclaw-\$(date +%Y-%m-%d).log
+    tail -F $OC_HOME/.openclaw/seeder.log
+
+${BLUE}━━━ Channel compatibility ━━━${NC}
+
+  ✅ feishu / wecom — full v2 architecture (per-peer subagent)
+  ❌ telegram / whatsapp / discord / slack / iMessage — fall back to
+     shared main agent. Use scripts/setup-shared-mode.sh OR hermes v1.
 
 EOF
 }
