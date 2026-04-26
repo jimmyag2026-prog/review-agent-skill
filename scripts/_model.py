@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 """_model.py — resolve which OpenRouter model to use for review-agent LLM calls.
 
-v2 (openclaw) precedence (highest → lowest):
-  1. REVIEW_AGENT_MODEL env var (explicit override, any format)
-  2. ~/.openclaw/openclaw.json → agents.defaults.models[*].alias == "default"
-     (the user's pinned default if they set one)
-  3. ~/.openclaw/openclaw.json → models.providers.openrouter.models[0]
-     (first-listed openrouter model; this is what `openclaw models list` shows
-     when no alias is the default)
-  4. Hard fallback: "anthropic/claude-sonnet-4.6"
+v2.2.4+ precedence (highest → lowest):
+  1. REVIEW_AGENT_MODEL env var (explicit override)
+  2. ~/.openclaw/openclaw.json → agents.defaults.model.primary
+     (the SAME source the per-peer subagent uses for its IM replies; this
+      keeps skill scripts in sync with the subagent's model)
+  3. ~/.openclaw/openclaw.json → agents.defaults.models[*].alias == "default"
+     (back-compat for older configs)
+  4. ~/.openclaw/openclaw.json → models.providers.openrouter.models[0]
+     (back-compat for v2.0–v2.2.3, which read this list directly)
+  5. Hard fallback: "anthropic/claude-sonnet-4.6"
 
-Returns a string ready to pass to the OpenRouter /chat/completions API.
-
-(v1 hermes version read ~/.hermes/config.yaml and mapped hermes-style ids
-like 'claude-sonnet-4-6' → 'anthropic/claude-sonnet-4.6'. In openclaw the
-model config entries are already in OpenRouter format, so no mapping needed.)
+Returns a string ready for OpenRouter /chat/completions, with the
+`openrouter/` prefix stripped if present (openclaw stores fully-qualified
+ids like "openrouter/deepseek/deepseek-v4-flash"; the OpenRouter API takes
+"deepseek/deepseek-v4-flash"). Direct-provider ids like
+"google/gemini-3-pro-preview" pass through unchanged — but note: those
+will only work via OpenRouter if OR routes that exact id; otherwise
+scripts hit a 404 and fall back to FALLBACK_MODEL. To pin a specific
+OpenRouter-routable model, set REVIEW_AGENT_MODEL.
 """
 import json
 import os
@@ -22,6 +27,12 @@ from pathlib import Path
 
 
 FALLBACK_MODEL = "anthropic/claude-sonnet-4.6"
+
+
+def _strip_or_prefix(mid):
+    if isinstance(mid, str) and mid.startswith("openrouter/"):
+        return mid[len("openrouter/"):]
+    return mid
 
 
 def _openclaw_default_model():
@@ -33,15 +44,21 @@ def _openclaw_default_model():
     except Exception:
         return None
 
-    # (2) agents.defaults.models[*] with alias == "default"
-    defaults = ((cfg.get("agents") or {}).get("defaults") or {}).get("models") or {}
+    defaults_node = ((cfg.get("agents") or {}).get("defaults") or {})
+
+    # (2) NEW: agents.defaults.model.primary — what the per-peer subagent uses
+    model_primary = (defaults_node.get("model") or {}).get("primary")
+    if model_primary:
+        return _strip_or_prefix(model_primary)
+
+    # (3) Back-compat: agents.defaults.models[*] with alias == "default"
+    defaults = defaults_node.get("models") or {}
     if isinstance(defaults, dict):
-        # Format is {"<provider>/<model>": {"alias": "default"}, ...}
         for model_id, meta in defaults.items():
             if isinstance(meta, dict) and meta.get("alias") == "default":
-                return model_id.removeprefix("openrouter/") if model_id.startswith("openrouter/") else model_id
+                return _strip_or_prefix(model_id)
 
-    # (3) first openrouter model in providers list
+    # (4) Back-compat: first openrouter model in providers list
     providers = ((cfg.get("models") or {}).get("providers") or {})
     openrouter = providers.get("openrouter") or {}
     models_list = openrouter.get("models") or []
@@ -67,10 +84,9 @@ def get_main_agent_model():
 
 if __name__ == "__main__":
     # Self-test
-    import sys
     override_cases = [
         ("explicit env", {"REVIEW_AGENT_MODEL": "openai/gpt-5"}, "openai/gpt-5"),
-        ("no env, uses config/fallback", {"REVIEW_AGENT_MODEL": ""}, None),  # depends on machine
+        ("no env, uses config/fallback", {"REVIEW_AGENT_MODEL": ""}, None),
     ]
     for name, env_patch, expected in override_cases:
         saved = {k: os.environ.get(k) for k in env_patch}
