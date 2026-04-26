@@ -233,6 +233,19 @@ EOF"
   done
   echo -e "${GREEN}✓${NC} {responder_name} → '$RESPONDER_NAME' in all persona files"
 
+  # Also fix the global responder-profile.md so the LLM sees the actual name
+  # in its system prompt (the bundled boss_profile.md template ships with
+  # `Name: Responder` as a placeholder; without this substitution the agent
+  # sees "I represent Jimmy" in SOUL.md but Name=Responder in the profile,
+  # and hedges by calling the Responder "上级" / "your manager" instead of
+  # using the actual name).
+  GPROFILE="$GLOBAL_RA_DIR/responder-profile.md"
+  if [ -f "$GPROFILE" ]; then
+    oc_run sed -i.bak "s|^- \\*\\*Name\\*\\*: Responder$|- **Name**: $RESPONDER_NAME|" "$GPROFILE" && \
+      oc_run rm -f "$GPROFILE.bak"
+    echo -e "${GREEN}✓${NC} responder-profile.md Name → '$RESPONDER_NAME'"
+  fi
+
   banner "Phase B · Patch openclaw.json"
   if [ -n "$RUN_AS" ]; then
     $RUN_AS python3 "$REPO_ROOT/patch_openclaw_json.py" \
