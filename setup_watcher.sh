@@ -178,24 +178,22 @@ seed_one() {
   # Clear stale session cache for this peer (prompt-cache won't stick to old persona)
   AGENT_DIR="\$(dirname \$NEW)/agents/\$(basename \$NEW | sed 's/workspace-//')"
   rm -f "\$AGENT_DIR/sessions/"*.jsonl "\$AGENT_DIR/sessions/sessions.json" "\$AGENT_DIR/sessions/"*.lock 2>/dev/null
+  # Marker so the polling loop / next sweep doesn't re-seed forever.
+  # Critical: SOUL.md content can't be used as the marker because our SOUL.md
+  # contains the literal openclaw-default phrases inside its "don't say this"
+  # rule list — leading to infinite re-seed loops on every polling tick.
+  : > "\$NEW/.review-agent-seeded"
   echo "\$(date -Iseconds) seeded \$NEW" >> "\$LOG"
 }
 
-# Initial sweep — handle peers created BEFORE watcher started
-for p in "\$WATCH_DIR"/workspace-feishu-* "\$WATCH_DIR"/workspace-wecom-*; do
-  [ -d "\$p" ] || continue
-  # Only re-seed if SOUL.md missing or contains the openclaw default
-  if [ ! -f "\$p/SOUL.md" ] || grep -q "I just came online\\|just woke up" "\$p/SOUL.md" 2>/dev/null; then
-    seed_one "\$p"
-  fi
-done
-
-# Watch loop. Three backends in priority order:
-#   1. inotifywait (linux) — event-driven, instant
-#   2. fswatch (macOS, brew install fswatch) — event-driven, instant
-#   3. polling (universal fallback, 2s) — uses SOUL.md content as
-#      "needs seeding" marker. No associative-array required, so this
-#      works on macOS bash 3.2 (the system /bin/bash).
+# A peer needs seeding iff:
+#   - dir name matches our pattern AND
+#   - the .review-agent-seeded marker is absent AND
+#   - SOUL.md is absent (fresh openclaw-created dir, before openclaw plants
+#     its own default). If SOUL.md is already present without our marker,
+#     it belongs to a DIFFERENT agent (e.g., memoirist on this user's mac
+#     for wecom-dm-*), so we must NOT touch it. To force re-seed for a
+#     pre-v2.2 review-agent peer, run vps-doctor.sh.
 needs_seed() {
   local p="\$1"
   [ -d "\$p" ] || return 1
@@ -203,10 +201,20 @@ needs_seed() {
     workspace-feishu-*|workspace-wecom-*) ;;
     *) return 1 ;;
   esac
-  [ ! -f "\$p/SOUL.md" ] && return 0
-  grep -q "I just came online\|just woke up" "\$p/SOUL.md" 2>/dev/null && return 0
-  return 1
+  [ -f "\$p/.review-agent-seeded" ] && return 1
+  [ -f "\$p/SOUL.md" ] && return 1
+  return 0
 }
+
+# Initial sweep — handle peers created BEFORE watcher started
+for p in "\$WATCH_DIR"/workspace-feishu-* "\$WATCH_DIR"/workspace-wecom-*; do
+  needs_seed "\$p" && seed_one "\$p"
+done
+
+# Watch loop. Three backends in priority order:
+#   1. inotifywait (linux) — event-driven, instant
+#   2. fswatch (macOS, brew install fswatch) — event-driven, instant
+#   3. polling (universal fallback, 2s)
 
 if command -v inotifywait >/dev/null 2>&1; then
   inotifywait -m -e create --format %w%f "\$WATCH_DIR" 2>/dev/null | while read NEW; do
