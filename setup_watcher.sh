@@ -190,18 +190,36 @@ for p in "\$WATCH_DIR"/workspace-feishu-* "\$WATCH_DIR"/workspace-wecom-*; do
   fi
 done
 
-# Watch loop — inotify if available, else 2s poll
+# Watch loop. Three backends in priority order:
+#   1. inotifywait (linux) — event-driven, instant
+#   2. fswatch (macOS, brew install fswatch) — event-driven, instant
+#   3. polling (universal fallback, 2s) — uses SOUL.md content as
+#      "needs seeding" marker. No associative-array required, so this
+#      works on macOS bash 3.2 (the system /bin/bash).
+needs_seed() {
+  local p="\$1"
+  [ -d "\$p" ] || return 1
+  case "\$(basename \$p)" in
+    workspace-feishu-*|workspace-wecom-*) ;;
+    *) return 1 ;;
+  esac
+  [ ! -f "\$p/SOUL.md" ] && return 0
+  grep -q "I just came online\|just woke up" "\$p/SOUL.md" 2>/dev/null && return 0
+  return 1
+}
+
 if command -v inotifywait >/dev/null 2>&1; then
   inotifywait -m -e create --format %w%f "\$WATCH_DIR" 2>/dev/null | while read NEW; do
     seed_one "\$NEW"
   done
+elif command -v fswatch >/dev/null 2>&1; then
+  fswatch -0 --event=Created "\$WATCH_DIR" 2>/dev/null | while IFS= read -r -d "" NEW; do
+    seed_one "\$NEW"
+  done
 else
-  declare -A SEEN
   while true; do
     for p in "\$WATCH_DIR"/workspace-feishu-* "\$WATCH_DIR"/workspace-wecom-*; do
-      [ -d "\$p" ] || continue
-      if [ -z "\${SEEN[\$p]:-}" ]; then
-        SEEN[\$p]=1
+      if needs_seed "\$p"; then
         seed_one "\$p"
       fi
     done

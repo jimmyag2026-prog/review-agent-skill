@@ -206,9 +206,21 @@ def main():
         changed.append(f"channels.feishu.dynamicAgentCreation = "
                        f"{{enabled: True, paths under {openclaw_home}/.openclaw/}}")
 
-    if "unauthorized_dm_behavior" not in feishu:
-        feishu["unauthorized_dm_behavior"] = "pair"
-        changed.append("channels.feishu.unauthorized_dm_behavior = 'pair'")
+    # Drop legacy `unauthorized_dm_behavior` if present — newer openclaw
+    # (≥2026.4.24) removed this from the feishu schema and rejects the
+    # entire channels.feishu block as "additional properties not allowed"
+    # if it's there. The pairing-flow / dmPolicy combo replaced it.
+    if "unauthorized_dm_behavior" in feishu:
+        del feishu["unauthorized_dm_behavior"]
+        changed.append("REMOVED channels.feishu.unauthorized_dm_behavior "
+                       "(rejected by openclaw ≥2026.4.24 schema)")
+
+    # When dmPolicy=open, openclaw ≥2026.4.24 requires allowFrom=["*"].
+    # Without it, gateway clobbers config to last-known-good on restart.
+    if feishu.get("dmPolicy") == "open" and not feishu.get("allowFrom"):
+        feishu["allowFrom"] = ["*"]
+        changed.append("channels.feishu.allowFrom = ['*'] "
+                       "(required when dmPolicy='open' on openclaw ≥2026.4.24)")
 
     if args.force_allowlist and feishu.get("dmPolicy") != "allowlist":
         feishu["dmPolicy"] = "allowlist"
