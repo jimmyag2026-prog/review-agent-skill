@@ -124,11 +124,20 @@ Requester 第一条消息到达时，按下面这棵决策树走:
 
 → **立刻**启 review 流程，不要问"你想怎么处理"、不要列选项。
 
-**如果是 Lark wiki / docx URL**: 先调 **原生 `feishu_wiki` / `feishu_doc` 工具** 读完内容，再把正文存入 `sessions/<id>/input/<slug>.txt`，然后 `ingest.py` → `scan.py` → 第一条 finding。
+**如果是 Lark wiki / docx / drive URL**:
 
-**如果原生 feishu_wiki 工具报 scope 错误** (`Access denied ... wiki:wiki:readonly`):
-- 不要假装读到了——直接回 Requester: "你发的 Lark wiki 链接我这边 app 没有 `wiki:wiki:readonly` scope 读不到，你先帮我把正文贴在聊天里，或者让 Admin 去 Lark 开发者后台加这个 scope"
-- 这种情况下**不要**走 ingest，直接回 + 停
+⚠️ **架构限制（不是配置问题）**：你作为 per-peer subagent，**没有** `feishu_wiki` / `feishu_doc` / `feishu_drive` 这些 tool。openclaw 把 channel-specific tool 只暴露给 main agent，不暴露给你（per-peer subagent）。这跟 Lark app scope 配不配、openclaw 装没装、plugin 启没启都**无关**——是 openclaw 架构层面的固定行为。
+
+直接回 Requester：
+
+> "我这边读不到 Lark 文档链接（per-peer subagent 架构限制，跟你的 app 配置无关）。麻烦把正文复制粘贴到这条对话里，我就能开始 review。"
+
+**绝对不要做**：
+- ❌ 假装"插件未配置 / 让 admin 启用 feishu plugin / 让 admin 装 openclaw"——这些都是错误诊断，admin 做了也不解决
+- ❌ 建议改 Lark app scope（scope 配了也没用，因为你根本没这个 tool 可调）
+- ❌ 长篇排查 openclaw 安装状态——你拿不到 tool 是 by design 不是 bug
+
+→ 等 Requester 贴正文后再走 `ingest.py` → `scan.py`。
 
 ### Step 2 · 无材料但明显要 review → 问一下有没有材料
 消息是 review 意图但不带任何材料（例如 "我想和 {responder_name} 讨论大使招募" / "帮我看看这个方案" 但没附件/链接）:
@@ -179,11 +188,12 @@ python3 ~/.openclaw/skills/review-agent/scripts/final-gate.py <session_id>
 
 **都在当前 workspace cwd 下运行**（session 创建在 `./sessions/<id>/`）。
 
-## 出站 (Lark DM / Doc)
+## 出站 (Lark DM)
 
-- 聊天回复 → 用原生 `feishu_chat` 工具
-- 发正式 brief 到 Lark doc → 用原生 `feishu_doc.create` + `feishu_drive.share`
-- **不要**调 `send-lark.sh` 或 `lark-doc-publish.py`——那是 v1 hermes 版的，v2 用原生工具
+- 聊天回复 → 用通用 **`message`** tool（openclaw 抽象，自动路由回当前 Requester 的 DM）
+- ⚠️ **你没有 `feishu_chat` / `feishu_doc` / `feishu_drive` / `feishu_bitable`**：这些只在 main agent 有。出 brief 时**只能贴 markdown 文本到 IM**，不能创建 Lark doc。
+- 6 段 brief 出来后，把 `_build_summary.py` 输出原样用 `message` tool 发出去（一次发，必要时拆成 2-3 条短消息）。**不要**说"我会创建 Lark 文档发给你"——你做不到。
+- **不要**调 `send-lark.sh` 或 `lark-doc-publish.py`——那是 v1 hermes 版的
 
 ## 自检（每 3 轮 Q&A 问自己一次）
 
