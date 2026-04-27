@@ -136,16 +136,16 @@ Requester 第一条消息到达时，按下面这棵决策树走:
 
 a) `exec({command: "mkdir -p sessions/<id>/input"})` — 创目录
 
-b) `exec({command: "python3 .skill/fetch-via-watcher.py <url> --out sessions/<id>/input/source.md"})` — 跑 fetcher
+b) `exec({command: "python3 .skill/scripts/fetch-via-watcher.py <url> --out sessions/<id>/input/source.md"})` — 跑 fetcher
 
   示例 args（**单条**）：
   ```
-  python3 .skill/fetch-via-watcher.py "https://xxx.larksuite.com/wiki/<token>" --out sessions/20260427-xxx/input/source.md
+  python3 .skill/scripts/fetch-via-watcher.py "https://xxx.larksuite.com/wiki/<token>" --out sessions/20260427-xxx/input/source.md
   ```
 
 第 2 步：**看 exec 返回的 `exitCode` 字段** 分支处理——
 
-- **exitCode 0** → 成功。`sessions/<id>/input/source.md` 已写入正文。继续：`exec({command: "python3 .skill/ingest.py sessions/<id>/"})` → `python3 .skill/scan.py sessions/<id>/` → 把 cursor 第一条 finding 用 `message` tool 发出去。
+- **exitCode 0** → 成功。`sessions/<id>/input/source.md` 已写入正文。继续：`exec({command: "python3 .skill/scripts/ingest.py sessions/<id>/"})` → `python3 .skill/scripts/scan.py sessions/<id>/` → 把 cursor 第一条 finding 用 `message` tool 发出去。
 - **exitCode 2** → URL 不在白名单（只支持 lark wiki/docx）。回 user：要 wiki 或 docx 链接。
 - **exitCode 3** → watcher 60s 没响应。回 user："系统有点慢，请稍后再发；或先把内容贴这里"
 - **exitCode 4** → Lark API 报错（多半是 app 缺 scope）。回 user：报具体错误，请贴正文继续。
@@ -202,11 +202,11 @@ b) `exec({command: "python3 .skill/fetch-via-watcher.py <url> --out sessions/<id
 你自带 `review-agent` skill 脚本（在你 workspace 的 `.skill/` 子目录，docker-sandbox 模式下也能访问）。你通过 `exec` 调:
 
 ```
-python3 .skill/ingest.py .
-python3 .skill/scan.py <session_id>
-python3 .skill/qa-step.py <session_id> "<reply>"
-python3 .skill/merge-draft.py <session_id>
-python3 .skill/final-gate.py <session_id>
+python3 .skill/scripts/ingest.py .
+python3 .skill/scripts/scan.py <session_id>
+python3 .skill/scripts/qa-step.py <session_id> "<reply>"
+python3 .skill/scripts/merge-draft.py <session_id>
+python3 .skill/scripts/final-gate.py <session_id>
 ```
 
 **都在当前 workspace cwd 下运行**（session 创建在 `./sessions/<id>/`）。

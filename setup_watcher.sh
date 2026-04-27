@@ -161,13 +161,23 @@ seed_one() {
   # while keeping the window tighter than a full second.
   sleep 0.2
   cp -R "\$TPL/." "\$NEW/" 2>/dev/null
-  # Copy skill scripts into peer workspace as .skill/ — peer's docker
-  # sandbox only mounts /workspace, so it can't see the host skill dir
-  # at ~/.openclaw/skills/review-agent. We give each peer its own copy
-  # so peer can call \`python3 .skill/<name>.py\` (relative path) in
-  # both docker-sandboxed (vps) and non-sandboxed (mac dev) modes.
-  SKILL_SRC="\$(dirname \$(dirname \$TPL))/skills/review-agent/scripts"
-  if [ -d "\$SKILL_SRC" ]; then
+  # Copy entire skill dir (scripts/ + references/ + SKILL.md / VERSION) into
+  # peer workspace as .skill/. Peer's docker sandbox only mounts /workspace,
+  # so it can't see the host skill at ~/.openclaw/skills/review-agent. We
+  # mirror the structure so scripts can resolve references via their normal
+  # \`Path(__file__).parent.parent / "references"\` logic.
+  # Resulting layout in peer workspace:
+  #   .skill/
+  #     scripts/*.py
+  #     references/*.md
+  #     SKILL.md, VERSION, ...
+  # Peer calls \`python3 .skill/scripts/<name>.py\`.
+  #
+  # SKILL_SRC = \$TARGET_HOME/.openclaw/skills/review-agent
+  # \$TPL is \$TARGET_HOME/.openclaw/workspace/templates/review-agent so
+  # SKILL_SRC is \$(dirname \$(dirname \$(dirname \$TPL)))/skills/review-agent.
+  SKILL_SRC="\$(dirname \$(dirname \$(dirname \$TPL)))/skills/review-agent"
+  if [ -d "\$SKILL_SRC/scripts" ]; then
     rm -rf "\$NEW/.skill"
     cp -R "\$SKILL_SRC" "\$NEW/.skill"
   fi

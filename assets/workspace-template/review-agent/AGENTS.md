@@ -31,7 +31,7 @@ Everything the Requester might send, and what you do.
 3. **Save attachments**: download any attached files into `sessions/<id>/input/`
 4. **Write meta.json**: subject, round=0, status=awaiting_subject_confirmation, created_at
 5. **Freeze profile + rules**: `cp responder-profile.md sessions/<id>/profile.md` (snapshot so future edits to global don't affect in-flight sessions); `cp review_rules.md sessions/<id>/review_rules.md`
-6. **Run ingest**: `python3 ~/.openclaw/skills/review-agent/scripts/ingest.py . sessions/<id>` — creates `normalized.md`. If ingest exits 3 (tool missing) → relay its stdout to Lark, mark session `ingest_failed`, STOP.
+6. **Run ingest**: `python3 .skill/scripts/ingest.py . sessions/<id>` — creates `normalized.md`. If ingest exits 3 (tool missing) → relay its stdout to Lark, mark session `ingest_failed`, STOP.
 7. **Confirm topic**: send Lark message asking Requester to confirm subject scope (one line, yes/no-ish)
 8. After their confirmation → run scan.py + responder simulation
 9. Enter Q&A loop (qa-step.py)
@@ -46,7 +46,7 @@ Each Requester reply. Two tool calls in order:
 {
   "name": "exec",
   "arguments": {
-    "command": "python3 ~/.openclaw/skills/review-agent/scripts/qa-step.py sessions/<session_id> \"<reply_text>\""
+    "command": "python3 .skill/scripts/qa-step.py sessions/<session_id> \"<reply_text>\""
   }
 }
 ```
@@ -75,16 +75,16 @@ qa-step.py classifies intent (accepted / modified / rejected / clarifying / scop
 Requester sends: "我想让 jimmy 看看这个计划 [Lark wiki URL] 这是 Astros 大使激励机制"
 
 ```
-Turn 1  exec: python3 ~/.openclaw/skills/review-agent/scripts/ingest.py sessions/<new_id>
-Turn 2  exec: python3 ~/.openclaw/skills/review-agent/scripts/confirm-topic.py sessions/<new_id>
+Turn 1  exec: python3 .skill/scripts/ingest.py sessions/<new_id>
+Turn 2  exec: python3 .skill/scripts/confirm-topic.py sessions/<new_id>
 Turn 3  message: (omit target) message=<confirm-topic stdout, the a/b/c options>
 ```
 
 Requester replies: "a"
 
 ```
-Turn 4  exec: python3 ~/.openclaw/skills/review-agent/scripts/scan.py sessions/<new_id>
-Turn 5  exec: python3 ~/.openclaw/skills/review-agent/scripts/qa-step.py sessions/<new_id> "a"
+Turn 4  exec: python3 .skill/scripts/scan.py sessions/<new_id>
+Turn 5  exec: python3 .skill/scripts/qa-step.py sessions/<new_id> "a"
 Turn 6  message: (omit target) message=<qa-step stdout, the first finding>
 ```
 
@@ -95,8 +95,8 @@ And so on. **One `message` send per Requester turn.** Scripts are your orchestra
 When cursor has no pending findings:
 
 ```bash
-python3 ~/.openclaw/skills/review-agent/scripts/merge-draft.py <session_id>
-python3 ~/.openclaw/skills/review-agent/scripts/final-gate.py <session_id> --verify-final
+python3 .skill/scripts/merge-draft.py <session_id>
+python3 .skill/scripts/final-gate.py <session_id> --verify-final
 ```
 
 If final-gate verdict is `READY` or `READY_WITH_OPEN_ITEMS`:
