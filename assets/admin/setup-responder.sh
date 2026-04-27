@@ -9,18 +9,65 @@
 #   setup-responder.sh --show         # cat the current profile
 #   setup-responder.sh --check        # report what % is filled vs placeholder
 #   setup-responder.sh --reset        # restore the default template (backup made)
+#
+# Daemon-user aware (matches install.sh detection):
+#   - $OPENCLAW_HOME env var (highest)
+#   - --target-user <name>
+#   - root + 'openclaw' user exists → /home/openclaw
+#   - else → $HOME
 set -euo pipefail
 
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
 
-GLOBAL_RA="$HOME/.openclaw/review-agent"
+# ─── parse --target-user out of args (other flags are forwarded) ────
+TARGET_USER=""
+NEW_ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --target-user) TARGET_USER="$2"; shift 2 ;;
+    *) NEW_ARGS+=("$1"); shift ;;
+  esac
+done
+set -- "${NEW_ARGS[@]:-}"
+
+# ─── resolve target user + their HOME ───
+if [ -z "$TARGET_USER" ]; then
+  if [ -n "${OPENCLAW_HOME:-}" ]; then
+    OC_HOME="$OPENCLAW_HOME"
+    TARGET_USER="$(basename "$OC_HOME")"
+  elif [ "$(id -u)" = "0" ] && id openclaw >/dev/null 2>&1; then
+    TARGET_USER="openclaw"
+    OC_HOME="/home/openclaw"
+  else
+    TARGET_USER="$(whoami)"
+    OC_HOME="$HOME"
+  fi
+else
+  if [ "$TARGET_USER" = "$(whoami)" ]; then
+    OC_HOME="$HOME"
+  else
+    OC_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6)
+    [ -z "$OC_HOME" ] && { echo "error: user '$TARGET_USER' not found"; exit 2; }
+  fi
+fi
+
+if [ "$TARGET_USER" != "$(whoami)" ]; then
+  RUN_AS="sudo -u $TARGET_USER -H"
+else
+  RUN_AS=""
+fi
+
+oc_run() { if [ -n "$RUN_AS" ]; then $RUN_AS "$@"; else "$@"; fi; }
+
+GLOBAL_RA="$OC_HOME/.openclaw/review-agent"
 PROFILE="$GLOBAL_RA/responder-profile.md"
-SKILL="$HOME/.openclaw/skills/review-agent"
+SKILL="$OC_HOME/.openclaw/skills/review-agent"
 ENABLED_JSON="$GLOBAL_RA/enabled.json"
 
 if [ ! -f "$PROFILE" ]; then
   echo -e "${RED}error:${NC} $PROFILE not found."
-  echo "  review-agent v2 not installed. Run install.sh first."
+  echo "  (target user: $TARGET_USER, openclaw HOME: $OC_HOME)"
+  echo "  review-agent v2 not installed for this user. Run install.sh first."
   exit 2
 fi
 
@@ -40,16 +87,16 @@ clear_session_caches() {
   # We detect review-agent peers by the .review-agent-seeded marker
   # the watcher writes (or as a fallback, presence of our SOUL.md).
   local n=0
-  for ws in "$HOME/.openclaw/"workspace-feishu-* "$HOME/.openclaw/"workspace-wecom-*; do
+  for ws in "$OC_HOME/.openclaw/"workspace-feishu-* "$OC_HOME/.openclaw/"workspace-wecom-*; do
     [ -d "$ws" ] || continue
     if [ ! -f "$ws/.review-agent-seeded" ] && \
-       ! grep -q "review-agent\|pre-meeting review\|挑刺" "$ws/SOUL.md" 2>/dev/null; then
+       ! oc_run grep -q "review-agent\|pre-meeting review\|挑刺" "$ws/SOUL.md" 2>/dev/null; then
       continue   # not a review-agent peer, leave alone
     fi
     local agent_id="$(basename $ws | sed 's/workspace-//')"
-    local ad="$HOME/.openclaw/agents/$agent_id"
+    local ad="$OC_HOME/.openclaw/agents/$agent_id"
     [ -d "$ad/sessions" ] || continue
-    rm -f "$ad/sessions/"*.jsonl "$ad/sessions/sessions.json" 2>/dev/null
+    oc_run bash -c "rm -f '$ad/sessions/'*.jsonl '$ad/sessions/sessions.json' 2>/dev/null"
     n=$((n+1))
   done
   echo "  → cleared $n review-agent peer session cache(s) (next message will re-read profile)"
@@ -128,9 +175,11 @@ guided_wizard() {
   read -rp "  EXTRA: " EXTRA
 
   local TS=$(date +%Y%m%d_%H%M%S)
-  cp "$PROFILE" "$PROFILE.bak.$TS"
+  oc_run cp "$PROFILE" "$PROFILE.bak.$TS"
 
-  cat > "$PROFILE" <<EOF
+  # Build the new profile in a temp file, then install it as the target user
+  local TMPF=$(mktemp)
+  cat > "$TMPF" <<EOF
 # Responder Profile
 
 > The agent reviews proposals as if **$NAME** were doing the review.
@@ -158,13 +207,20 @@ $PEEVES
 EOF
 
   if [ -n "$EXTRA" ]; then
-    cat >> "$PROFILE" <<EOF
+    cat >> "$TMPF" <<EOF
 
 ## Other style notes
 
 $EXTRA
 EOF
   fi
+
+  if [ -n "$RUN_AS" ]; then
+    sudo install -m 644 -o "$TARGET_USER" -g "$TARGET_USER" "$TMPF" "$PROFILE"
+  else
+    install -m 644 "$TMPF" "$PROFILE"
+  fi
+  rm -f "$TMPF"
 
   echo
   echo -e "${GREEN}✓ wrote $PROFILE${NC} (backup: $PROFILE.bak.$TS)"
@@ -187,9 +243,10 @@ case "${1:-status}" in
   --reset|reset)
     SRC="$SKILL/references/template/boss_profile.md"
     [ ! -f "$SRC" ] && { echo "error: default profile not found at $SRC"; exit 3; }
-    cp "$PROFILE" "$PROFILE.bak.$(date +%s)"
-    cp "$SRC" "$PROFILE"
-    sed -i.bak "s|^- \\*\\*Name\\*\\*: Responder$|- **Name**: $(resolve_responder_name)|" "$PROFILE" && rm -f "$PROFILE.bak"
+    oc_run cp "$PROFILE" "$PROFILE.bak.$(date +%s)"
+    oc_run cp "$SRC" "$PROFILE"
+    oc_run sed -i.bak "s|^- \\*\\*Name\\*\\*: Responder$|- **Name**: $(resolve_responder_name)|" "$PROFILE"
+    oc_run rm -f "$PROFILE.bak"
     echo "✓ responder-profile reset to default (backup written)"
     clear_session_caches
     ;;

@@ -449,11 +449,18 @@ EOF
     read -rp "现在跑一下 5 问引导填 Responder 画像吗？[Y/n] " WIZARD_NOW
     case "${WIZARD_NOW:-Y}" in
       n|N|no|NO)
-        echo "  Skipped. 用到时跑：bash $REPO_ROOT/assets/admin/setup-responder.sh --guided"
+        echo "  Skipped. 用到时跑（如果是 root 给 openclaw 用户装的，记得 --target-user）："
+        if [ -n "$RUN_AS" ]; then
+          echo "    bash $REPO_ROOT/assets/admin/setup-responder.sh --target-user $TARGET_USER --guided"
+        else
+          echo "    bash $REPO_ROOT/assets/admin/setup-responder.sh --guided"
+        fi
         ;;
       *)
         echo
-        bash "$REPO_ROOT/assets/admin/setup-responder.sh" --guided
+        # Forward --target-user so the wizard finds the right $OC_HOME
+        # (matches install.sh's daemon-user detection).
+        bash "$REPO_ROOT/assets/admin/setup-responder.sh" --target-user "$TARGET_USER" --guided
         ;;
     esac
   fi
