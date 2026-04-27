@@ -161,6 +161,16 @@ seed_one() {
   # while keeping the window tighter than a full second.
   sleep 0.2
   cp -R "\$TPL/." "\$NEW/" 2>/dev/null
+  # Copy skill scripts into peer workspace as .skill/ — peer's docker
+  # sandbox only mounts /workspace, so it can't see the host skill dir
+  # at ~/.openclaw/skills/review-agent. We give each peer its own copy
+  # so peer can call \`python3 .skill/<name>.py\` (relative path) in
+  # both docker-sandboxed (vps) and non-sandboxed (mac dev) modes.
+  SKILL_SRC="\$(dirname \$(dirname \$TPL))/skills/review-agent/scripts"
+  if [ -d "\$SKILL_SRC" ]; then
+    rm -rf "\$NEW/.skill"
+    cp -R "\$SKILL_SRC" "\$NEW/.skill"
+  fi
   # Symlink global responder-profile if it exists
   if [ -f "\$GLOBAL_PROFILE" ]; then
     rm -f "\$NEW/responder-profile.md"
@@ -216,23 +226,33 @@ needs_seed() {
 LARK_FETCHER="$TARGET_HOME/.openclaw/skills/review-agent/scripts/lark_fetcher.py"
 
 process_lark_requests() {
-  local req out err url
+  local req url req_dir out_fn err_fn out err
   for req in "\$WATCH_DIR"/workspace-feishu-*/lark-fetch/*.request.json \\
              "\$WATCH_DIR"/workspace-wecom-*/lark-fetch/*.request.json; do
     [ -f "\$req" ] || continue
     [ ! -f "\$LARK_FETCHER" ] && continue
-    out=\$(python3 -c "import json; d=json.load(open('\$req')); print(d.get('out',''))" 2>/dev/null)
-    err=\$(python3 -c "import json; d=json.load(open('\$req')); print(d.get('err',''))" 2>/dev/null)
     url=\$(python3 -c "import json; d=json.load(open('\$req')); print(d.get('url',''))" 2>/dev/null)
-    if [ -z "\$url" ] || [ -z "\$out" ]; then
-      [ -n "\$err" ] && echo "malformed request" > "\$err"
+    # Filename-only fields (peer writes filenames; watcher resolves to host paths).
+    out_fn=\$(python3 -c "import json; d=json.load(open('\$req')); print(d.get('out_filename',''))" 2>/dev/null)
+    err_fn=\$(python3 -c "import json; d=json.load(open('\$req')); print(d.get('err_filename',''))" 2>/dev/null)
+    req_dir=\$(dirname "\$req")
+    out="\$req_dir/\$out_fn"
+    err="\$req_dir/\$err_fn"
+    if [ -z "\$url" ] || [ -z "\$out_fn" ]; then
+      [ -n "\$err_fn" ] && echo "malformed request" > "\$err"
       rm -f "\$req"; continue
     fi
-    if python3 "\$LARK_FETCHER" "\$url" "\$out" 2>"\${err:-/tmp/lark-fetch.err}"; then
+    # Use a TEMP err file. If subprocess succeeds, err is discarded;
+    # if subprocess fails, move temp → final err. This avoids a race
+    # where peer's poller sees an empty err file (created by stderr
+    # redirect) before lark_fetcher finishes and treats it as failure.
+    local tmp_err=\$(mktemp)
+    if python3 "\$LARK_FETCHER" "\$url" "\$out" 2>"\$tmp_err"; then
       echo "\$(date -Iseconds) lark-fetched: \$url → \$out" >> "\$LOG"
-      [ -n "\$err" ] && [ -f "\$err" ] && [ ! -s "\$err" ] && rm -f "\$err"
+      rm -f "\$tmp_err"
     else
-      echo "\$(date -Iseconds) lark-fetch FAILED: \$url" >> "\$LOG"
+      mv "\$tmp_err" "\$err"
+      echo "\$(date -Iseconds) lark-fetch FAILED: \$url (see \$err)" >> "\$LOG"
     fi
     rm -f "\$req"
   done

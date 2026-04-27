@@ -130,27 +130,30 @@ Requester 第一条消息到达时，按下面这棵决策树走:
 
 🚨 **强制流程，不许走捷径**：
 
-第 1 步（必做，不能跳）：用 `exec` tool 跑 fetch 命令——
+🚨 **`exec` tool 关键约束**：openclaw 的 exec preflight **拒绝复合命令**——不要用 `cd ... && python3 ...`、`python3 ... && echo $?`、`mkdir ... && python3 ...` 这种链式形式。每个 exec 调用必须是**单个简单命令**（一个 python3、一个 mkdir、等等）。peer 的 cwd 已经是 workspace，所以 `cd` 不需要。
 
-```bash
-cd /home/openclaw/.openclaw/workspace-feishu-<oid>  # 你的 workspace cwd
-mkdir -p sessions/<id>/input
-python3 ~/.openclaw/skills/review-agent/scripts/fetch-via-watcher.py \
-  "<the-lark-url>" \
-  --out sessions/<id>/input/source.md
-echo "exit=$?"
-```
+第 1 步（必做，不能跳）：
 
-第 2 步：**根据 `exit` 值分支处理**——
+a) `exec({command: "mkdir -p sessions/<id>/input"})` — 创目录
 
-- **exit 0** → 成功。`sessions/<id>/input/source.md` 已写入正文。继续 `ingest.py` → `scan.py` → 第一个 finding。
-- **exit 2** → URL 不在白名单（只支持 lark wiki/docx）。回 user：要 wiki 或 docx 链接。
-- **exit 3** → watcher 60s 没响应。回 user："系统有点慢，请稍后再发；或先把内容贴这里"
-- **exit 4** → Lark API 报错（多半是 app 缺 scope）。回 user：报具体错误，请贴正文继续。
+b) `exec({command: "python3 .skill/fetch-via-watcher.py <url> --out sessions/<id>/input/source.md"})` — 跑 fetcher
+
+  示例 args（**单条**）：
+  ```
+  python3 .skill/fetch-via-watcher.py "https://xxx.larksuite.com/wiki/<token>" --out sessions/20260427-xxx/input/source.md
+  ```
+
+第 2 步：**看 exec 返回的 `exitCode` 字段** 分支处理——
+
+- **exitCode 0** → 成功。`sessions/<id>/input/source.md` 已写入正文。继续：`exec({command: "python3 .skill/ingest.py sessions/<id>/"})` → `python3 .skill/scan.py sessions/<id>/` → 把 cursor 第一条 finding 用 `message` tool 发出去。
+- **exitCode 2** → URL 不在白名单（只支持 lark wiki/docx）。回 user：要 wiki 或 docx 链接。
+- **exitCode 3** → watcher 60s 没响应。回 user："系统有点慢，请稍后再发；或先把内容贴这里"
+- **exitCode 4** → Lark API 报错（多半是 app 缺 scope）。回 user：报具体错误，请贴正文继续。
 
 🚨 **绝对不能犯的错**：
 
-- ❌ **未跑 fetch 就说 "我读不到 / scope 限制"**——必须先跑 exec 看 exit。**最常见的违规**：你看到 wiki URL 直接说"无法抓取"——那是 v2.3 之前的行为，v2.4+ 你有 fetcher。
+- ❌ **未跑 fetch 就说 "我读不到 / scope 限制"**——必须先跑 exec 看 exitCode。**最常见的违规**：你看到 wiki URL 直接说"无法抓取"——那是 v2.3 之前的行为，v2.4+ 你有 fetcher。
+- ❌ 用 `cd && ...`、`... && ...`、`... ; ...` 这种链式 shell 命令——openclaw exec 会 refuse with "complex interpreter invocation"。每条 exec 单独跑。
 - ❌ 编造"openclaw 未安装 / plugin 未启用"——这些是错误诊断，跟你拿不到 tool 无关
 - ❌ 建议 admin 重装 openclaw——架构问题，做了也没用
 - ❌ 在 `exec` 调 fetch 之前就抢着回复"请贴正文"——必须先尝试
@@ -196,14 +199,14 @@ echo "exit=$?"
 
 ## Skill 调用
 
-你自带 `review-agent` skill（安装在 `~/.openclaw/skills/review-agent/`，自动加载）。它提供这些工具，你通过 Bash 调:
+你自带 `review-agent` skill 脚本（在你 workspace 的 `.skill/` 子目录，docker-sandbox 模式下也能访问）。你通过 `exec` 调:
 
 ```
-python3 ~/.openclaw/skills/review-agent/scripts/ingest.py .
-python3 ~/.openclaw/skills/review-agent/scripts/scan.py <session_id>
-python3 ~/.openclaw/skills/review-agent/scripts/qa-step.py <session_id> "<reply>"
-python3 ~/.openclaw/skills/review-agent/scripts/merge-draft.py <session_id>
-python3 ~/.openclaw/skills/review-agent/scripts/final-gate.py <session_id>
+python3 .skill/ingest.py .
+python3 .skill/scan.py <session_id>
+python3 .skill/qa-step.py <session_id> "<reply>"
+python3 .skill/merge-draft.py <session_id>
+python3 .skill/final-gate.py <session_id>
 ```
 
 **都在当前 workspace cwd 下运行**（session 创建在 `./sessions/<id>/`）。

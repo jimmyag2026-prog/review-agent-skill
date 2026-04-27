@@ -53,37 +53,56 @@ def main():
               f"wiki|docx URLs accepted): {args.url}", file=sys.stderr)
         sys.exit(2)
 
+    # cwd validation: peer should be in its workspace.
+    # In docker-sandbox mode this is /workspace (bind-mounted from host's
+    # workspace-feishu-<oid>/ dir). In non-sandboxed mode it's the host
+    # workspace dir directly. Accept either.
     cwd = Path.cwd().resolve()
-    if "workspace-feishu-" not in str(cwd) and "workspace-wecom-" not in str(cwd):
-        print(f"error: must be run from a peer workspace (got: {cwd})",
+    cwd_str = str(cwd)
+    if cwd_str != "/workspace" and "workspace-feishu-" not in cwd_str \
+            and "workspace-wecom-" not in cwd_str:
+        print(f"error: must be run from a peer workspace (got: {cwd}; "
+              f"expected /workspace or .../workspace-feishu-<oid>/)",
               file=sys.stderr)
         sys.exit(2)
 
-    # Use a unique request id so multiple concurrent fetches don't collide
+    # The watcher (running on host) discovers request files via glob
+    # against the host's workspace dirs; the peer's docker bind-mount
+    # makes its writes visible there. But the request's `out` / `err`
+    # paths must be writable BY THE WATCHER (which runs on host with no
+    # /workspace dir). So we store FILENAMES only — watcher resolves
+    # them against the host workspace dir it found the request in.
     req_id = uuid.uuid4().hex[:8]
     req_dir = cwd / "lark-fetch"
     req_dir.mkdir(parents=True, exist_ok=True)
     req_file = req_dir / f"{req_id}.request.json"
-    out_file = req_dir / f"{req_id}.result.md"
-    err_file = req_dir / f"{req_id}.error.txt"
+    # Peer-side paths (used for polling)
+    peer_out = req_dir / f"{req_id}.result.md"
+    peer_err = req_dir / f"{req_id}.error.txt"
 
     req_file.write_text(json.dumps({
         "url": args.url,
-        "out": str(out_file),
-        "err": str(err_file),
+        # Filename only — watcher resolves to <host_workspace>/lark-fetch/<filename>
+        "out_filename": f"{req_id}.result.md",
+        "err_filename": f"{req_id}.error.txt",
         "request_id": req_id,
         "submitted_at": time.time(),
     }) + "\n")
+    out_file = peer_out
+    err_file = peer_err
 
     print(f"submitted fetch request {req_id} (waiting up to {args.timeout}s for watcher)",
           file=sys.stderr)
 
-    # Poll for result or error
+    # Poll for result or error.
+    # Watcher writes out_file (via atomic .tmp+rename) on success, or err_file
+    # with content on failure. Empty err_file = transient (watcher's stderr
+    # redirect created an empty file but subprocess hasn't finished yet) —
+    # ignore until non-empty.
     deadline = time.time() + args.timeout
     while time.time() < deadline:
-        if out_file.exists():
+        if out_file.exists() and out_file.stat().st_size > 0:
             content = out_file.read_text()
-            # Cleanup
             try: req_file.unlink(missing_ok=True)
             except: pass
             try: out_file.unlink()
@@ -95,7 +114,7 @@ def main():
             else:
                 sys.stdout.write(content)
             return
-        if err_file.exists():
+        if err_file.exists() and err_file.stat().st_size > 0:
             err = err_file.read_text()
             try: req_file.unlink(missing_ok=True)
             except: pass
