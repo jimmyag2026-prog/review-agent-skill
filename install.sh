@@ -324,58 +324,56 @@ EOF"
   banner "Done — review-agent v2.2 ENABLED"
   cat <<EOF
 
-${BLUE}Summary${NC}
-  target user:       $TARGET_USER
-  openclaw HOME:     $OC_HOME
-  Admin:             $ADMIN_NAME ($ADMIN_OID) → routes to MAIN openclaw agent
-  Responder:         $RESPONDER_NAME (agent reviews as if they were reviewing)
-  Requesters:        any other Lark user → per-peer review-coach subagent
+review-agent 是给 $RESPONDER_NAME 准备的 pre-meeting review 教练。从现在
+起，任何 Lark 用户给你的 bot 发方案 / PDF / Lark 文档链接，bot 都会按
+$RESPONDER_NAME 的 review 标准帮 ta 挑刺、追问，直到那份材料修到
+"$RESPONDER_NAME 一打开就能决策" 的状态。最后 bot 把一份 6 段决策 brief
+同时发给 $RESPONDER_NAME 和 Requester。
 
-${BLUE}━━━ 5-minute Admin onboarding ━━━${NC}
+这套架构里有三个角色：
 
-${YELLOW}Step 1.${NC} Verify routing (30s):
-  In Lark, DM your bot "who are you" — expect a normal openclaw
-  assistant reply. (If you get a review-coach asking for materials,
-  the admin → main binding didn't land — run vps-doctor.sh.)
+  • ${BLUE}Admin${NC}     — 你（$ADMIN_NAME，open_id 已绑定）
+                  你 DM bot 走 main openclaw agent，是普通聊天 / 管理对话，
+                  不会被卷进 review 流。
 
-${YELLOW}Step 2.${NC} ${RED}MOST IMPORTANT — fill the Responder profile (3 min):${NC}
-  Without this step, every review will produce generic findings that
-  don't match how you'd actually review.
+  • ${BLUE}Responder${NC} — $RESPONDER_NAME（被代言的人，review-agent 模仿其风格）
+                  当前默认 = Admin。如果你只是负责运维但实际审 review
+                  的是另一个人，可以 --enable-only 重设。
 
-      bash $REPO_ROOT/assets/admin/setup-responder.sh --guided
+  • ${BLUE}Requester${NC} — 其他任何 Lark 用户
+                  ta 第一次 DM bot 时，openclaw 会自动给 ta 起一个独立
+                  subagent 进程，加载 review-coach 人格，session 上下文
+                  跟其他 Requester 完全隔离。无需注册、无需邀请。
 
-  5 questions: your role, decision style, pet peeves, must-ask
-  questions, style notes. Auto-clears peer session caches when done.
+${BLUE}Requester 来了之后会发生什么${NC}：
 
-${YELLOW}Step 3.${NC} First test (1 min):
-  Have a DIFFERENT Lark user (not you) DM the bot a brief proposal.
-  Expect a review-coach reply with first finding.
+  1. ta 在 Lark 给 bot 发材料（PDF / docx 链接 / 长文本）
+  2. bot 自动起一个 sandbox subagent，跑四柱扫描（背景 / 资料 / 框架 / 意图）
+  3. bot 用 ${BLUE}$RESPONDER_NAME${NC} 的 standards 找前 5 条最关键漏洞
+  4. 一条 finding 一条 finding 发给 ta，等 ta 回答 / 改 / 反驳
+  5. 全部走完后合成一份 brief，同时发给 $RESPONDER_NAME 和 ta
 
-${BLUE}━━━ After your first real review ━━━${NC}
+你不需要做任何事——它是异步的、自托管的、按需触发的。
 
-  Open the session brief and compare to what you'd write yourself:
-      ls $OC_HOME/.openclaw/workspace-feishu-<oid>/sessions/<sid>/
+${BLUE}让 review 更精准${NC}（强烈推荐做一次）：
 
-  See ADMIN_GUIDE.md for the feedback loop on refining the profile
-  based on real review output:
-      $REPO_ROOT/ADMIN_GUIDE.md
+review-agent 默认用一份"通用 senior decision-maker"的画像。要让 review
+出来真像 $RESPONDER_NAME 自己在审，跑一下：
 
-${BLUE}━━━ Day-to-day commands ━━━${NC}
+    bash $REPO_ROOT/assets/admin/setup-responder.sh --guided
 
-  setup-responder.sh             # status / wizard / edit / check / reset
-  $REPO_ROOT/vps-doctor.sh       # idempotent self-heal anytime
-  $SKILL_DST/update.sh           # check / install latest version
-  $SKILL_DST/uninstall.sh --yes  # remove (keep peer history)
+5 个问题（Role / Decision style / Pet peeves / 3 必问问题 / 风格备注），
+~3 分钟。改完自动生效，下次 Requester DM 就用新画像。
 
-  watch logs:
-    tail -F /tmp/openclaw/openclaw-\$(date +%Y-%m-%d).log
-    tail -F $OC_HOME/.openclaw/seeder.log
+${BLUE}日常运维${NC}（用到再翻）：
 
-${BLUE}━━━ Channel compatibility ━━━${NC}
+  • 看版本/升级：   bash $SKILL_DST/update.sh
+  • 出问题自愈：   bash $REPO_ROOT/vps-doctor.sh
+  • 完整指南：     $REPO_ROOT/ADMIN_GUIDE.md
+  • 卸载：         bash $SKILL_DST/uninstall.sh --yes [--purge]
 
-  ✅ feishu / wecom — full v2 architecture (per-peer subagent)
-  ❌ telegram / whatsapp / discord / slack / iMessage — fall back to
-     shared main agent. Use scripts/setup-shared-mode.sh OR hermes v1.
+${BLUE}Channel${NC}：feishu / wecom 全功能（per-peer subagent）；其他 channel
+（telegram / whatsapp / discord / slack / iMessage）退化为 shared-main 模式。
 
 EOF
 }
