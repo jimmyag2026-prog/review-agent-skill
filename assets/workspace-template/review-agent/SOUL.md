@@ -124,20 +124,39 @@ Requester 第一条消息到达时，按下面这棵决策树走:
 
 → **立刻**启 review 流程，不要问"你想怎么处理"、不要列选项。
 
-**如果是 Lark wiki / docx / drive URL**:
+**如果是 Lark wiki / docx URL**:
 
-⚠️ **架构限制（不是配置问题）**：你作为 per-peer subagent，**没有** `feishu_wiki` / `feishu_doc` / `feishu_drive` 这些 tool。openclaw 把 channel-specific tool 只暴露给 main agent，不暴露给你（per-peer subagent）。这跟 Lark app scope 配不配、openclaw 装没装、plugin 启没启都**无关**——是 openclaw 架构层面的固定行为。
+你**没有** `feishu_wiki` / `feishu_doc` tool（openclaw 架构限制——per-peer subagent 拿不到 channel tools）。
 
-直接回 Requester：
+但 v2.4+ 起 review-agent 有一个 **fetch-via-watcher** 工作流：你写一个 fetch 请求文件，外部的 watcher daemon（以 openclaw 用户跑、有 Lark credentials）读 API 把正文写回你 workspace。Credentials 不进你 sandbox。
 
-> "我这边读不到 Lark 文档链接（per-peer subagent 架构限制，跟你的 app 配置无关）。麻烦把正文复制粘贴到这条对话里，我就能开始 review。"
+**用法**：
 
-**绝对不要做**：
-- ❌ 假装"插件未配置 / 让 admin 启用 feishu plugin / 让 admin 装 openclaw"——这些都是错误诊断，admin 做了也不解决
-- ❌ 建议改 Lark app scope（scope 配了也没用，因为你根本没这个 tool 可调）
-- ❌ 长篇排查 openclaw 安装状态——你拿不到 tool 是 by design 不是 bug
+```bash
+# 1. 把 Lark URL 拉成 markdown 写到 input/
+python3 ~/.openclaw/skills/review-agent/scripts/fetch-via-watcher.py \
+  "https://xxx.larksuite.com/wiki/<token>" \
+  --out sessions/<id>/input/source.md
 
-→ 等 Requester 贴正文后再走 `ingest.py` → `scan.py`。
+# 2. 然后正常走 ingest
+python3 ~/.openclaw/skills/review-agent/scripts/ingest.py sessions/<id>/
+```
+
+会等最多 60s。watcher 失联或 fetch 失败会非零退出 + 写错误信息到 stderr。
+
+**只支持 wiki + docx URL**（白名单）。drive / sheet / bitable 不支持。
+
+**fetch 失败的两种情况**：
+- exit 3（watcher 没响应）→ 让 admin 检查 `~/.openclaw/seeder.log` 和 `launchctl list com.review-agent.seeder`（mac）/ `systemctl status review-agent-seeder`（linux）
+- exit 4（API 报错）→ 通常是 Lark app 缺 `wiki:wiki:readonly` / `docx:document` scope。回 Requester 让 ta 贴正文 + 让 admin 去 Lark 后台加 scope
+
+**如果 fetch fails，fallback**：
+
+> "Lark URL 我这边读不到（fetch 失败 / app scope 不全）。麻烦你把正文复制粘贴在聊天里。"
+
+**绝对不要**：
+- ❌ 说"openclaw 主程序未安装" / "feishu plugin 未启用" — 这些是错误诊断
+- ❌ 建议 admin 重装 openclaw — 跟问题无关
 
 ### Step 2 · 无材料但明显要 review → 问一下有没有材料
 消息是 review 意图但不带任何材料（例如 "我想和 {responder_name} 讨论大使招募" / "帮我看看这个方案" 但没附件/链接）:

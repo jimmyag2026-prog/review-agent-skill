@@ -206,15 +206,53 @@ needs_seed() {
   return 0
 }
 
+# ─── Lark fetch broker ─────────────────────────────────────────────
+# Peer subagents have no feishu_* tools (openclaw architectural restriction).
+# When a Requester sends a Lark wiki/docx URL, peer's fetch-via-watcher.py
+# writes a request file under <peer-workspace>/lark-fetch/<id>.request.json.
+# We detect those, run lark_fetcher.py (which has access to openclaw.json
+# credentials since we run as the openclaw user), and write the result
+# back into peer's workspace. Credentials never enter peer's sandbox.
+LARK_FETCHER="$TARGET_HOME/.openclaw/skills/review-agent/scripts/lark_fetcher.py"
+
+process_lark_requests() {
+  local req out err url
+  for req in "\$WATCH_DIR"/workspace-feishu-*/lark-fetch/*.request.json \\
+             "\$WATCH_DIR"/workspace-wecom-*/lark-fetch/*.request.json; do
+    [ -f "\$req" ] || continue
+    [ ! -f "\$LARK_FETCHER" ] && continue
+    out=\$(python3 -c "import json; d=json.load(open('\$req')); print(d.get('out',''))" 2>/dev/null)
+    err=\$(python3 -c "import json; d=json.load(open('\$req')); print(d.get('err',''))" 2>/dev/null)
+    url=\$(python3 -c "import json; d=json.load(open('\$req')); print(d.get('url',''))" 2>/dev/null)
+    if [ -z "\$url" ] || [ -z "\$out" ]; then
+      [ -n "\$err" ] && echo "malformed request" > "\$err"
+      rm -f "\$req"; continue
+    fi
+    if python3 "\$LARK_FETCHER" "\$url" "\$out" 2>"\${err:-/tmp/lark-fetch.err}"; then
+      echo "\$(date -Iseconds) lark-fetched: \$url → \$out" >> "\$LOG"
+      [ -n "\$err" ] && [ -f "\$err" ] && [ ! -s "\$err" ] && rm -f "\$err"
+    else
+      echo "\$(date -Iseconds) lark-fetch FAILED: \$url" >> "\$LOG"
+    fi
+    rm -f "\$req"
+  done
+}
+
 # Initial sweep — handle peers created BEFORE watcher started
 for p in "\$WATCH_DIR"/workspace-feishu-* "\$WATCH_DIR"/workspace-wecom-*; do
   needs_seed "\$p" && seed_one "\$p"
 done
 
 # Watch loop. Three backends in priority order:
-#   1. inotifywait (linux) — event-driven, instant
-#   2. fswatch (macOS, brew install fswatch) — event-driven, instant
-#   3. polling (universal fallback, 2s)
+#   1. inotifywait (linux) — event-driven for new dirs; lark fetch via 2s poll
+#   2. fswatch (macOS, brew install fswatch) — same pattern
+#   3. polling (universal fallback) — both in same loop
+
+# Lark-fetch background poller runs in all modes (event-driven for dir
+# creation works fine; for fetch requests inside existing dirs we'd need
+# recursive inotify which is fragile, so just poll every 2s — request
+# files are rare and small).
+( while true; do process_lark_requests; sleep 2; done ) &
 
 if command -v inotifywait >/dev/null 2>&1; then
   inotifywait -m -e create --format %w%f "\$WATCH_DIR" 2>/dev/null | while read NEW; do
@@ -227,9 +265,7 @@ elif command -v fswatch >/dev/null 2>&1; then
 else
   while true; do
     for p in "\$WATCH_DIR"/workspace-feishu-* "\$WATCH_DIR"/workspace-wecom-*; do
-      if needs_seed "\$p"; then
-        seed_one "\$p"
-      fi
+      needs_seed "\$p" && seed_one "\$p"
     done
     sleep 2
   done
