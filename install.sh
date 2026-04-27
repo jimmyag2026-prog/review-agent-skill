@@ -1,5 +1,5 @@
 #!/bin/bash
-# install.sh — one-shot install of review-agent v2.2 into openclaw
+# install.sh — one-shot install of review-agent v2.3 into openclaw
 # (standalone-skill-repo edition).
 #
 # Two phases:
@@ -379,7 +379,7 @@ EOF"
     fi
   fi
 
-  banner "Done — review-agent v2.2 ENABLED"
+  banner "Done — review-agent v2.3 ENABLED"
   cat <<EOF
 
 review-agent 是给 $RESPONDER_NAME 准备的 pre-meeting review 教练。从现在
@@ -459,7 +459,7 @@ EOF
   fi
 }
 
-banner "review-agent v2.2 · install (openclaw)"
+banner "review-agent v2.3 · install (openclaw)"
 echo "  target user: $TARGET_USER  ($([ -n "$RUN_AS" ] && echo "via sudo" || echo "current user"))"
 echo "  openclaw HOME: $OC_HOME"
 

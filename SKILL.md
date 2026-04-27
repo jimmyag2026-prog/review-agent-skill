@@ -1,7 +1,7 @@
 ---
 name: review-agent
 description: "Pre-meeting review coach for Lark/Feishu (or WeCom). Invoked when a Requester DMs their dedicated review-agent subagent with a draft, proposal, plan, or 1:1 agenda. Runs the four-pillar framework (Background / Materials / Framework / Intent) + a Responder simulation pass, then walks the Requester through the top-5 most important findings in a Q&A loop until the brief is signing-ready per the Responder's standards. Produces a 6-section decision brief on close. Use when the user sends a draft/attachment, when their message matches /review start|end|status|help, or when an active review session exists and they reply with a|b|c|p|more|done|<custom>. Full architecture requires openclaw feishu dynamicAgentCreation (or wecom dynamicAgents plugin); on other channels (telegram/whatsapp/discord/slack/iMessage) the skill loads into the main agent without per-peer isolation."
-version: 2.2.0
+version: 2.3.0
 license: MIT
 metadata:
   openclaw:
