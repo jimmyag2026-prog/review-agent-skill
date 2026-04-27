@@ -266,17 +266,50 @@ def main():
         print("already canonical — no changes.")
         return
 
+    # Pre-write validation: serialize the patched config and re-parse it.
+    # Catches malformed nesting / non-JSON-serializable values BEFORE we
+    # touch disk. Avoids the catastrophic "patcher writes invalid JSON →
+    # gateway clobbers config to last-known-good → all our changes
+    # silently lost" failure mode (observed Apr 25).
+    try:
+        serialized = json.dumps(cfg, indent=2, ensure_ascii=False)
+        json.loads(serialized)  # round-trip parse
+    except (ValueError, TypeError) as e:
+        print(f"error: patched config failed JSON round-trip ({e})",
+              file=sys.stderr)
+        print("aborting — original config left untouched.", file=sys.stderr)
+        sys.exit(4)
+
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     bak = openclaw_json.with_suffix(f".json.bak.review-agent-{ts}")
     shutil.copy2(openclaw_json, bak)
-    openclaw_json.write_text(
-        json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
-    )
+    openclaw_json.write_text(serialized + "\n")
+
+    # Post-write validation: ask openclaw itself to validate, if available.
+    # Fail soft — if openclaw CLI isn't on PATH (e.g., running as root
+    # targeting a different user), skip silently. The gateway's own
+    # restart-time validation will catch deeper schema issues.
+    cli_check_msg = ""
+    try:
+        import subprocess
+        r = subprocess.run(["openclaw", "doctor"],
+                           capture_output=True, text=True, timeout=15)
+        if r.returncode != 0 and ("invalid" in (r.stdout + r.stderr).lower() or
+                                   "must NOT have" in (r.stdout + r.stderr)):
+            cli_check_msg = ("\n⚠ openclaw doctor reports schema issues with "
+                             "the patched config. Backup at:\n  " + str(bak) +
+                             "\nReview the doctor output before restarting "
+                             "the gateway. Restore with:\n  "
+                             "cp '" + str(bak) + "' '" + str(openclaw_json) + "'")
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+        pass
 
     print("patched:")
     for c in changed:
         print(f"  • {c}")
     print(f"backup: {bak}")
+    if cli_check_msg:
+        print(cli_check_msg, file=sys.stderr)
     print()
     print("Apply by restarting the gateway:")
     print("  openclaw gateway restart  # or: systemctl restart openclaw")

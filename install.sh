@@ -285,6 +285,40 @@ EOF"
     banner "Phase B · Install peer-workspace seeder watcher"
     bash "$REPO_ROOT/setup_watcher.sh" --target-user "$TARGET_USER" || \
       echo -e "${YELLOW}!${NC} watcher install had issues — peer subagents may load openclaw default persona"
+
+    # Health check: verify watcher is actually RUNNING (not just exited 0).
+    # setup_watcher.sh can finish without starting the daemon if e.g.
+    # `launchctl load` returned 0 but the service died immediately.
+    sleep 2
+    WATCHER_OK=0
+    if [ "$(uname)" = "Darwin" ]; then
+      # launchd: PID column is column 1; "-" means not running
+      if launchctl list com.review-agent.seeder 2>/dev/null | grep -q '"PID"'; then
+        WATCHER_OK=1
+      fi
+    elif command -v systemctl >/dev/null 2>&1; then
+      # systemd: check unit is active
+      if [ -n "$RUN_AS" ]; then
+        $RUN_AS systemctl --user is-active review-agent-seeder >/dev/null 2>&1 && WATCHER_OK=1
+        systemctl is-active review-agent-seeder >/dev/null 2>&1 && WATCHER_OK=1
+      else
+        systemctl --user is-active review-agent-seeder >/dev/null 2>&1 && WATCHER_OK=1
+      fi
+    else
+      # nohup mode: check process by name
+      pgrep -f review-agent-seeder.sh >/dev/null 2>&1 && WATCHER_OK=1
+    fi
+
+    if [ $WATCHER_OK -eq 1 ]; then
+      echo -e "  ${GREEN}✓${NC} watcher running (will seed review-coach into new peer workspaces)"
+    else
+      echo -e "  ${RED}✗${NC} watcher installed but NOT running."
+      echo "      Symptom: new Requester DMs will get 'Hey I just came online' instead"
+      echo "      of review-coach. To diagnose:"
+      echo "        bash $REPO_ROOT/setup_watcher.sh           # reinstall"
+      echo "        bash $REPO_ROOT/vps-doctor.sh              # full self-heal"
+      echo "        cat $OC_HOME/.openclaw/seeder.log          # see error logs"
+    fi
   else
     echo -e "${YELLOW}!${NC} --skip-watcher: peer subagents will load openclaw default persona"
     echo "    Install later: bash $REPO_ROOT/setup_watcher.sh"
@@ -388,6 +422,13 @@ review-agent 默认用一份"通用 senior decision-maker"的画像。要让 rev
 
 5 个问题（Role / Decision style / Pet peeves / 3 必问问题 / 风格备注），
 ~3 分钟。改完自动生效，下次 Requester DM 就用新画像。
+
+${BLUE}成本预期${NC}：每次完整 review（attachment → top-5 Q&A → brief）大约调
+8-20 次 LLM。当前 \`agents.defaults.model.primary\` 决定主 agent 用哪个，
+skill 脚本独立调 OpenRouter（见 \`agents.defaults.model.primary\` 同步设定）。
+便宜组合参考：deepseek-v4-flash ≈ \$0.05-0.20/review；强模型 (gemini-3-pro
+/ claude-opus / gpt-4) ≈ \$0.5-3/review。可在 OpenClaw config / OpenRouter
+dashboard 切换 + 监控。
 
 ${BLUE}日常运维${NC}（用到再翻）：
 

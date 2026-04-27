@@ -58,7 +58,7 @@ fi
 if [ $KEY_FOUND -eq 1 ]; then
   ok "OpenRouter API key configured"
 else
-  fail "No OpenRouter API key found" "set in openclaw.json models.providers.openrouter.apiKey OR export OPENROUTER_API_KEY=sk-or-v1-..."
+  fail "No OpenRouter API key found" "review-agent's analysis scripts (scan / qa-step / merge-draft / final-gate / _build_summary) call OpenRouter directly for structured tasks. Even if your openclaw subagent uses Google/Anthropic/etc. for IM replies, these scripts need their own OR key. Set: openclaw config set models.providers.openrouter.apiKey sk-or-v1-... OR export OPENROUTER_API_KEY=sk-or-v1-..."
 fi
 
 # feishu channel enabled
