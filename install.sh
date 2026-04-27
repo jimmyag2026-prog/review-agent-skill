@@ -144,6 +144,13 @@ EOF"
 
   echo
   echo -e "${GREEN}Phase A complete.${NC} Skill files installed; openclaw not yet wired."
+  echo
+  echo -e "${YELLOW}Heads-up — Phase B will ask for your Lark open_id (ou_xxx).${NC}"
+  echo "If you don't already know it, the easiest way:"
+  echo "  1. In Lark, DM your bot a single message ('hi' is fine)"
+  echo "  2. Phase B will auto-detect it from the gateway log"
+  echo "(if you DM AFTER Phase B has already prompted, ctrl-C and re-run"
+  echo " 'bash install.sh --enable-only')"
 }
 
 # ─── Admin open_id discovery (interactive) ───
@@ -169,12 +176,18 @@ discover_admin_oid() {
     echo "Recent feishu senders (from gateway log):"
     echo "$recent_oids" | sed 's/^/  /'
     echo
-    echo "If your open_id is in the list, paste it. Otherwise, send a DM to"
-    echo "your bot first (any text), then re-run this script."
+    echo "If yours is above, paste it below."
+    echo "If not, ctrl-C now → DM bot once → re-run: bash install.sh --enable-only"
   else
-    echo "No recent feishu senders found in logs. Two ways to get your open_id:"
-    echo "  a) DM your bot a single message (anything), then re-run this script"
-    echo "  b) Look up via Lark Open API or your Lark profile (advanced)"
+    echo "No recent feishu DMs found in the gateway log."
+    echo
+    echo "Easiest way to surface your open_id:"
+    echo "  1. ctrl-C to abort"
+    echo "  2. In Lark, DM your bot 'hi' (anything works)"
+    echo "  3. Re-run:  bash install.sh --enable-only"
+    echo "     The script will auto-detect your open_id from the log."
+    echo
+    echo "Or paste your open_id directly below if you already know it."
   fi
 }
 
@@ -278,13 +291,24 @@ EOF"
   fi
 
   banner "Phase B · Clear stale peer session caches"
+  # Only clear review-agent peer sessions. On machines that share wecom
+  # with memoirist (or any other agent), blindly globbing wecom-* would
+  # wipe unrelated agent histories. Detect review-agent peers via the
+  # .review-agent-seeded marker (or our SOUL.md content as fallback).
   CLEARED=0
-  for ad in "$OC_HOME/.openclaw/agents/"feishu-* "$OC_HOME/.openclaw/agents/"wecom-*; do
-    [ -d "$ad/sessions" ] || continue
-    oc_run bash -c "rm -f '$ad/sessions/'*.jsonl '$ad/sessions/sessions.json' '$ad/sessions/'*.lock 2>/dev/null"
+  for ws in "$OC_HOME/.openclaw/"workspace-feishu-* "$OC_HOME/.openclaw/"workspace-wecom-*; do
+    [ -d "$ws" ] || continue
+    if [ ! -f "$ws/.review-agent-seeded" ] && \
+       ! oc_run grep -q "review-agent\|pre-meeting review\|挑刺" "$ws/SOUL.md" 2>/dev/null; then
+      continue
+    fi
+    AGENT_ID="$(basename $ws | sed 's/workspace-//')"
+    AD="$OC_HOME/.openclaw/agents/$AGENT_ID"
+    [ -d "$AD/sessions" ] || continue
+    oc_run bash -c "rm -f '$AD/sessions/'*.jsonl '$AD/sessions/sessions.json' '$AD/sessions/'*.lock 2>/dev/null"
     CLEARED=$((CLEARED+1))
   done
-  echo "  ✓ cleared $CLEARED peer agent session cache(s)"
+  echo "  ✓ cleared $CLEARED review-agent peer session cache(s) (other agents untouched)"
 
   ADMIN_PEER_DIR="$OC_HOME/.openclaw/agents/feishu-${ADMIN_OID}"
   ADMIN_WS="$OC_HOME/.openclaw/workspace-feishu-${ADMIN_OID}"
@@ -376,6 +400,22 @@ ${BLUE}Channel${NC}：feishu / wecom 全功能（per-peer subagent）；其他 c
 （telegram / whatsapp / discord / slack / iMessage）退化为 shared-main 模式。
 
 EOF
+
+  # Offer to run the personalization wizard right now (interactive only).
+  # Skipped in non-interactive mode (--admin-open-id passed at command line).
+  if [ $NON_INTERACTIVE -eq 0 ]; then
+    echo
+    read -rp "现在跑一下 5 问引导填 Responder 画像吗？[Y/n] " WIZARD_NOW
+    case "${WIZARD_NOW:-Y}" in
+      n|N|no|NO)
+        echo "  Skipped. 用到时跑：bash $REPO_ROOT/assets/admin/setup-responder.sh --guided"
+        ;;
+      *)
+        echo
+        bash "$REPO_ROOT/assets/admin/setup-responder.sh" --guided
+        ;;
+    esac
+  fi
 }
 
 banner "review-agent v2.2 · install (openclaw)"

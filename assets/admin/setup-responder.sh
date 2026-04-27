@@ -33,13 +33,26 @@ resolve_responder_name() {
 }
 
 clear_session_caches() {
+  # Only clear sessions for peers whose workspace is review-agent's.
+  # On machines that also run memoirist (or another agent) on wecom,
+  # blindly globbing wecom-* would wipe their session history too —
+  # observed Apr 25 during install; took 4 memoirist users with it.
+  # We detect review-agent peers by the .review-agent-seeded marker
+  # the watcher writes (or as a fallback, presence of our SOUL.md).
   local n=0
-  for ad in "$HOME/.openclaw/agents/"feishu-* "$HOME/.openclaw/agents/"wecom-*; do
+  for ws in "$HOME/.openclaw/"workspace-feishu-* "$HOME/.openclaw/"workspace-wecom-*; do
+    [ -d "$ws" ] || continue
+    if [ ! -f "$ws/.review-agent-seeded" ] && \
+       ! grep -q "review-agent\|pre-meeting review\|挑刺" "$ws/SOUL.md" 2>/dev/null; then
+      continue   # not a review-agent peer, leave alone
+    fi
+    local agent_id="$(basename $ws | sed 's/workspace-//')"
+    local ad="$HOME/.openclaw/agents/$agent_id"
     [ -d "$ad/sessions" ] || continue
     rm -f "$ad/sessions/"*.jsonl "$ad/sessions/sessions.json" 2>/dev/null
     n=$((n+1))
   done
-  echo "  → cleared $n peer session cache(s) (next message will re-read profile)"
+  echo "  → cleared $n review-agent peer session cache(s) (next message will re-read profile)"
 }
 
 show_status() {
