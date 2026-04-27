@@ -207,18 +207,12 @@ def build_classify_user_prompt(sd: Path, requester_msg: str, current_annotation:
 
 
 def resolve_responder(sd: Path):
-    name = "上级"
+    """v2: delegate to _platform.resolve_responder_name (reads workspace
+    owner.json). v1 hermes ~/.review-agent/users/<oid>/meta.json path is
+    no longer consulted."""
+    from _platform import resolve_responder_name as _platform_responder_name
+    name = _platform_responder_name() or "the Responder"
     profile = ""
-    try:
-        m = json.load(open(sd / "meta.json"))
-        resp_oid = m.get("responder_open_id")
-        if resp_oid:
-            root = Path(os.environ.get("REVIEW_AGENT_ROOT", Path.home() / ".review-agent"))
-            rm = root / "users" / resp_oid / "meta.json"
-            if rm.exists():
-                name = json.load(open(rm)).get("display_name") or name
-    except Exception:
-        pass
     if (sd / "profile.md").exists():
         profile = (sd / "profile.md").read_text()
     return name, profile

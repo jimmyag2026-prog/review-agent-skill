@@ -139,18 +139,9 @@ def main():
         print("warn: no accepted/modified findings — nothing to merge. skipping.", file=sys.stderr)
         sys.exit(0)
 
-    # Responder + profile for persona
-    name, profile = "上级", ""
-    try:
-        m = json.load(open(sd / "meta.json"))
-        resp_oid = m.get("responder_open_id")
-        if resp_oid:
-            root = Path(os.environ.get("REVIEW_AGENT_ROOT", Path.home() / ".review-agent"))
-            rm = root / "users" / resp_oid / "meta.json"
-            if rm.exists():
-                name = json.load(open(rm)).get("display_name") or name
-    except Exception:
-        pass
+    # Responder + profile for persona (v2: read workspace owner.json)
+    name = resolve_responder_name() or "the Responder"
+    profile = ""
     if (sd / "profile.md").exists():
         profile = (sd / "profile.md").read_text()
 
