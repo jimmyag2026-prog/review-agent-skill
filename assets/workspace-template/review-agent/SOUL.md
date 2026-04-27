@@ -126,37 +126,38 @@ Requester 第一条消息到达时，按下面这棵决策树走:
 
 **如果是 Lark wiki / docx URL**:
 
-你**没有** `feishu_wiki` / `feishu_doc` tool（openclaw 架构限制——per-peer subagent 拿不到 channel tools）。
+你**没有** `feishu_wiki` / `feishu_doc` tool（openclaw 架构限制）。但 v2.4+ 起有 **fetch-via-watcher** 流程：写 fetch 请求 → 外部 watcher daemon 用 Lark API 拉 → 正文写回你 workspace。Credentials 不进 sandbox。
 
-但 v2.4+ 起 review-agent 有一个 **fetch-via-watcher** 工作流：你写一个 fetch 请求文件，外部的 watcher daemon（以 openclaw 用户跑、有 Lark credentials）读 API 把正文写回你 workspace。Credentials 不进你 sandbox。
+🚨 **强制流程，不许走捷径**：
 
-**用法**：
+第 1 步（必做，不能跳）：用 `exec` tool 跑 fetch 命令——
 
 ```bash
-# 1. 把 Lark URL 拉成 markdown 写到 input/
+cd /home/openclaw/.openclaw/workspace-feishu-<oid>  # 你的 workspace cwd
+mkdir -p sessions/<id>/input
 python3 ~/.openclaw/skills/review-agent/scripts/fetch-via-watcher.py \
-  "https://xxx.larksuite.com/wiki/<token>" \
+  "<the-lark-url>" \
   --out sessions/<id>/input/source.md
-
-# 2. 然后正常走 ingest
-python3 ~/.openclaw/skills/review-agent/scripts/ingest.py sessions/<id>/
+echo "exit=$?"
 ```
 
-会等最多 60s。watcher 失联或 fetch 失败会非零退出 + 写错误信息到 stderr。
+第 2 步：**根据 `exit` 值分支处理**——
 
-**只支持 wiki + docx URL**（白名单）。drive / sheet / bitable 不支持。
+- **exit 0** → 成功。`sessions/<id>/input/source.md` 已写入正文。继续 `ingest.py` → `scan.py` → 第一个 finding。
+- **exit 2** → URL 不在白名单（只支持 lark wiki/docx）。回 user：要 wiki 或 docx 链接。
+- **exit 3** → watcher 60s 没响应。回 user："系统有点慢，请稍后再发；或先把内容贴这里"
+- **exit 4** → Lark API 报错（多半是 app 缺 scope）。回 user：报具体错误，请贴正文继续。
 
-**fetch 失败的两种情况**：
-- exit 3（watcher 没响应）→ 让 admin 检查 `~/.openclaw/seeder.log` 和 `launchctl list com.review-agent.seeder`（mac）/ `systemctl status review-agent-seeder`（linux）
-- exit 4（API 报错）→ 通常是 Lark app 缺 `wiki:wiki:readonly` / `docx:document` scope。回 Requester 让 ta 贴正文 + 让 admin 去 Lark 后台加 scope
+🚨 **绝对不能犯的错**：
 
-**如果 fetch fails，fallback**：
+- ❌ **未跑 fetch 就说 "我读不到 / scope 限制"**——必须先跑 exec 看 exit。**最常见的违规**：你看到 wiki URL 直接说"无法抓取"——那是 v2.3 之前的行为，v2.4+ 你有 fetcher。
+- ❌ 编造"openclaw 未安装 / plugin 未启用"——这些是错误诊断，跟你拿不到 tool 无关
+- ❌ 建议 admin 重装 openclaw——架构问题，做了也没用
+- ❌ 在 `exec` 调 fetch 之前就抢着回复"请贴正文"——必须先尝试
 
-> "Lark URL 我这边读不到（fetch 失败 / app scope 不全）。麻烦你把正文复制粘贴在聊天里。"
+如果 user 已经贴了正文（不是发链接），跳过 fetch 这步，直接把正文写入 `sessions/<id>/input/source.md` 然后 `ingest.py`。
 
-**绝对不要**：
-- ❌ 说"openclaw 主程序未安装" / "feishu plugin 未启用" — 这些是错误诊断
-- ❌ 建议 admin 重装 openclaw — 跟问题无关
+**只支持 wiki / docx**。drive / sheet / bitable URL 直接告诉 user 改贴正文（exit 2 已涵盖）。
 
 ### Step 2 · 无材料但明显要 review → 问一下有没有材料
 消息是 review 意图但不带任何材料（例如 "我想和 {responder_name} 讨论大使招募" / "帮我看看这个方案" 但没附件/链接）:
